@@ -2025,13 +2025,9 @@ class Controller {
       return;
     }
     this.playIndex++;
-    // 已播完列表最后一块：若还有后续块（先只读了一个块），询问是否继续
-    if (this.players.length === 0 && this.cacheIndex >= this.blocks.length) {
-      if (typeof this.plugin.onBlocksFinished === "function") {
-        this.plugin.onBlocksFinished(this);
-      }
-      return;
-    }
+    // 不再在这里询问「是否继续」：默认就是一块接一块读下去。
+    // 列表读完时递归调用 play() 会因为取不到 player 而自然收尾（stop + 空闲），
+    // 这与改动前的行为一致。
     this.play();
   }
 
@@ -2372,12 +2368,24 @@ module.exports = class TTSPlugin extends Plugin {
         click: async () => {
           // 用户手势的同步阶段必须先解锁音频（await 之后手势失效会无声）
           unlockAudio();
-          // 只选中一个块时，取「该块之后」的内容作为可继续的余量：
-          // 读完这一块后提示是否继续，而不是直接结束。
-          const tail = blocks.length === 1
-            ? await this.fetchTailBlocks(detail.protyle.block.rootID, blocks[0])
-            : null;
-          this.startBlocks(blocks, tail);
+          const rootID = detail.protyle.block.rootID;
+          if (blocks.length === 1) {
+            // 只选中一个块：从该块一直读到文档末尾（一块接一块，无需确认）。
+            // 定位不到该块时 fetchBlocksFrom 会退回「从第一个块开始」。
+            const from = await this.fetchBlocksFrom(rootID, blocks[0]);
+            this.startBlocks(from.length ? from : blocks);
+            return;
+          }
+          if (!blocks.length) {
+            // 不知道从哪个块开始：从第一个块开始读整篇
+            const all = await this.fetchBlocksFrom(rootID, null);
+            if (all.length) {
+              this.startBlocks(all);
+            }
+            return;
+          }
+          // 多选：读所选这些块（也无需确认，读完即止）
+          this.startBlocks(blocks);
         },
       });
 
@@ -2388,9 +2396,15 @@ module.exports = class TTSPlugin extends Plugin {
           // 必须在 await 之前解锁：await 之后用户手势已失效，
           // 移动端/鸿蒙上 AudioContext 将无法恢复，导致无声
           unlockAudio();
+          // 没有当前块时 currentBlockId 为 undefined，
+          // fetchDocBlocks 的 fromBlockId 为空即从第一个块开始（整篇朗读）。
           const currentBlockId = blocks[0] && blocks[0].getAttribute("data-node-id");
           const allBlocks = await this.fetchDocBlocks(detail.protyle.block.rootID, currentBlockId);
-          this.startBlocks(allBlocks);
+          if (allBlocks.length) {
+            this.startBlocks(allBlocks);
+          } else {
+            showMessage(this.i18n.loadFailed || "获取文档内容失败");
+          }
         },
       });
     });
@@ -2436,7 +2450,7 @@ module.exports = class TTSPlugin extends Plugin {
     this.voiceLabelEl = null;
   }
 
-  startBlocks(blockElements, keepTail) {
+  startBlocks(blockElements) {
     // 移动端/鸿蒙：必须在用户点击的同步阶段解锁音频，
     // 否则合成完成时手势已失效，AudioContext 处于 suspended 会完全无声
     unlockAudio();
@@ -2445,120 +2459,19 @@ module.exports = class TTSPlugin extends Plugin {
       playbackRate: this.playbackRate,
     }, this);
     this.controller.loadBlocks(blockElements);
-    // 「继续读后续块」的余量：只读一个块时，把该块之后的内容留在这里，
-    // 等本块读完再由用户决定是否继续（见 askContinue）。
-    this.pendingTail = Array.isArray(keepTail) ? keepTail : null;
+    // 载入的列表就是全部要读的内容，一块接一块读到底，无需用户确认
     this.controller.play();
   }
 
-  // 一次朗读自然读完（列表已空）。若还有留存的后续块，提示是否继续。
-  onBlocksFinished(controller) {
-    if (this.controller !== controller) {
-      return;
-    }
-    const tail = this.pendingTail;
-    if (!tail || !tail.length) {
-      controller.stop();
-      this.setStatus(this.i18n.idle || "空闲");
-      return;
-    }
-    const count = tail.length;
-    // 保持播放态：暂停在末尾等用户决定，悬浮条不消失
-    controller.isPaused = true;
-    this.markPausedIcon();
-    this.setStatus(`${this.i18n.finishedThisBlock || "本块已读完"} · ${count} ${this.i18n.moreBlocks || "个块待续"}`);
-    showMessage(`${this.i18n.finishedThisBlock || "本块已读完"}，${this.i18n.askContinue || "是否继续读后续块？"}（${count}）`, 8000);
-    this.showContinueButton(count);
-  }
-
-  // 单块重试用尽。停在原地，让用户决定继续还是放弃，不静默跳过。
+  // 单块重试用尽：明确告知原因并停下（不静默跳过、也不放额外按钮）。
+  // 用户想继续时，直接重新选择起点即可。
   onBlockFailed(controller, err) {
     if (this.controller !== controller) {
       return;
     }
     const reason = err && err.message ? err.message : String(err);
-    controller.isPaused = true;
-    this.markPausedIcon();
     this.setStatus(`${this.i18n.blockFailed || "朗读失败"}（${reason}）`);
-    // 失败块本身留在原地不动，后续块作为「可继续」的余量存起来，
-    // 否则按钮显示了、点了却读不到东西（pendingTail 为空 → continueReading 直接返回）。
-    const rest = controller.blocks.slice(controller.playIndex + 1)
-      .filter((b) => b && !b.isEmpty())
-      .map((b) => b.el)
-      .filter((el) => el && el.nodeType === 1);  // 只统计真正能读的元素，避免按钮数字虚高
-    // 没有后续块可读时就不放「继续」按钮（点了也没内容），只保留错误提示
-    if (rest.length) {
-      this.pendingTail = rest;
-      this.showContinueButton(rest.length, true);
-    } else {
-      controller.stop();
-    }
-  }
-
-  // 进入「等待用户决定」状态时，把暂停按钮图标改成播放态
-  markPausedIcon() {
-    document.querySelectorAll('.tts-nav-btn[data-type="pause"] use').forEach((el) => {
-      el.setAttribute("xlink:href", "#iconPlay");
-    });
-  }
-
-  // 在悬浮条 / 状态栏上临时显示一个「继续」按钮。
-  // 直接操作现有 DOM，避免大改两个控制条的模板结构。
-  showContinueButton(count, isRetry) {
-    this.hideContinueButton();
-    const onMobile = this.mobileBar && this.mobileBar.style.display !== "none";
-    // 移动端悬浮条本身就是容器，要插到条**内**；状态栏则插到行内同级的末尾。
-    // （若统一用 target.parentElement，移动端会把按钮插到 body 上，跑到条外面去。）
-    const host = onMobile ? this.mobileBar
-      : (this.statusIconTemp && this.statusIconTemp.parentElement);
-    if (!host) {
-      return;
-    }
-    const btn = document.createElement("span");
-    btn.className = "tts-nav-btn tts-continue-btn";
-    btn.setAttribute("data-type", "continue");
-    btn.title = this.i18n.askContinue || "是否继续读后续块？";
-    btn.innerHTML = `<svg><use xlink:href="#iconPlay"></use></svg>`;
-    // 同步阶段先解锁音频，否则 await 之后手势失效会无声
-    btn.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      ev.preventDefault();
-      unlockAudio();
-      this.continueReading();
-    });
-    host.appendChild(btn);
-    this.continueBtn = btn;
-  }
-
-  hideContinueButton() {
-    if (this.continueBtn) {
-      try {
-        this.continueBtn.remove();
-      } catch (e) { /* ignore */ }
-      this.continueBtn = null;
-    }
-  }
-
-  // 用户点了「继续」：把留存的后续块接着读下去
-  continueReading() {
-    this.hideContinueButton();
-    const tail = this.pendingTail;
-    this.pendingTail = null;
-    if (!tail || !tail.length) {
-      return;
-    }
-    // 余量可能是 DOM 元素（来自 fetchTailBlocks）或 Block 对象（来自控制器）
-    const els = tail.map((b) => (b && b.el) ? b.el : b)
-      .filter((el) => el && el.nodeType === 1);
-    if (els.length) {
-      this.startBlocks(els);
-      return;
-    }
-    const text = tail.map((b) => (b && b.content) || (typeof b === "string" ? b : ""))
-      .filter((t) => t && t.trim()).join("\n");
-    if (text) {
-      this.startRead([text]);
-    }
+    controller.stop();
   }
 
   // 双击块跳转朗读的绑定。
@@ -2683,8 +2596,6 @@ module.exports = class TTSPlugin extends Plugin {
   }
 
   stopReading() {
-    this.hideContinueButton();
-    this.pendingTail = null;
     if (this.controller) {
       this.controller.stop();
     }
@@ -2850,21 +2761,30 @@ module.exports = class TTSPlugin extends Plugin {
     return allBlocks;
   }
 
-  // 取「指定块之后」的文档块（不含该块本身），用于「读完本块后是否继续」。
-  // 返回的是 DOM 元素数组，交给 startBlocks 时会被包成 Block。
-  async fetchTailBlocks(rootID, blockEl) {
+  // 取「从指定块开始到文档末尾」的块（含该块本身），用于单块朗读时自动续读。
+  // 返回 DOM 元素数组，交给 startBlocks 时会被包成 Block。
+  // 若拿不到块 ID（即「不知道从哪个块开始」），则退回整篇文档，
+  // 也就是从第一个块开始读 —— 不因为定位失败就什么都不读。
+  async fetchBlocksFrom(rootID, blockEl) {
     try {
       const nodeId = blockEl && typeof blockEl.getAttribute === "function"
         ? blockEl.getAttribute("data-node-id") : null;
-      if (!rootID || !nodeId) {
-        return null;
+      if (!rootID) {
+        return [];
+      }
+      if (!nodeId) {
+        return await this.fetchDocBlocks(rootID, null);
       }
       const all = await this.fetchDocBlocks(rootID, nodeId);
-      // all[0] 是当前块自身，其余才是后续块
-      return all.length > 1 ? all.slice(1) : null;
+      if (all.length) {
+        return all;
+      }
+      // 该块不在文档块列表里（例如已被删除）：从第一个块开始
+      logger.warn("[TTS]\t未定位到起始块，改为从第一个块开始");
+      return await this.fetchDocBlocks(rootID, null);
     } catch (e) {
-      logger.warn("[TTS]\t获取后续块失败（不影响本块朗读）", e);
-      return null;
+      logger.warn("[TTS]\t获取起始块失败", e);
+      return [];
     }
   }
 

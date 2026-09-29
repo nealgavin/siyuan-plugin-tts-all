@@ -25,10 +25,6 @@
     "diagnose": "Diagnostics",
     "voiceHint": "Tap to choose voice",
     "blockRetrying": "Failed, retrying",
-    "finishedThisBlock": "This block finished",
-    "moreBlocks": "more block(s) to read",
-    "askContinue": "Continue reading the following blocks?",
-    "continueReading": "Continue reading",
     "edgeUnavailable": "Cannot use the selected voice: Edge direct or kernel WS proxy (kernel >= 3.7.0) is required. To avoid switching voices unexpectedly, other engines are not used automatically; you can pick an engine manually from the menu.",
     "engineVoiceWarning": "may not be the selected voice"
 }

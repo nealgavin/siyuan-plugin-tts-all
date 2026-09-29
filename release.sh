@@ -4,7 +4,7 @@
 #
 # 用法：
 #   ./release.sh              # 使用 plugin.json 中的版本号
-#   ./release.sh 1.2.5        # 指定版本号并自动写入 plugin.json
+#   ./release.sh 1.2.6        # 指定版本号并自动写入 plugin.json
 #
 # 说明：本仓库是独立上架的集市插件（非 zuoez02 的维护者转移）。
 #       每次推 tag 后 GitHub Actions 会自动打包 package.zip 并创建 Release，

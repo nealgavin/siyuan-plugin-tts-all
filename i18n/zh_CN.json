@@ -25,10 +25,6 @@
     "diagnose": "环境自检",
     "voiceHint": "点击选择声源",
     "blockRetrying": "朗读失败，正在重试",
-    "finishedThisBlock": "本块已读完",
-    "moreBlocks": "个块待续",
-    "askContinue": "是否继续读后续块？",
-    "continueReading": "继续读后续块",
     "edgeUnavailable": "无法使用所选声源：需要 Edge 直连或内核 WS 代理（内核 ≥ 3.7.0）。为避免突然换人声，不会自动改用其它语音；可在菜单中手动指定引擎。",
     "engineVoiceWarning": "可能不是所选声源"
 }
