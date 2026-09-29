@@ -2,7 +2,7 @@
     "name": "siyuan-plugin-tts-all",
     "author": "nealgavin",
     "url": "https://github.com/nealgavin/siyuan-plugin-tts-all",
-    "version": "1.2.4",
+    "version": "1.2.5",
     "minAppVersion": "3.1.28",
     "backends": [
         "windows",
@@ -25,8 +25,8 @@
         "zh_CN": "文本朗读（全平台）"
     },
     "description": {
-        "default": "Read blocks aloud with multi-engine fallback, works on desktop, mobile, tablet and HarmonyOS",
-        "zh_CN": "多引擎自动降级的文本朗读，支持桌面端、手机、平板与鸿蒙版思源笔记"
+        "default": "Read blocks aloud with a locked voice (Edge TTS), works on desktop, mobile, tablet and HarmonyOS",
+        "zh_CN": "人声稳定的文本朗读（锁定所选声源），支持桌面端、手机、平板与鸿蒙版思源笔记"
     },
     "readme": {
         "default": "README.md"

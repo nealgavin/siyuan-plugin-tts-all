@@ -13,7 +13,7 @@
     "engineDesktopOnly": "desktop only",
     "loading": "Loading...",
     "playing": "Playing",
-    "blockFailed": "Failed to read this block, skipped",
+    "blockFailed": "Failed to read this block",
     "loadFailed": "Failed to load document content",
     "noSelection": "No selected content to read",
     "playbackRate": "Playback rate",
@@ -23,7 +23,12 @@
     "quickOpen": "Read the currently selected content",
     "scrollToCurrent": "Scroll to current block",
     "diagnose": "Diagnostics",
-    "audioBlocked": "Audio blocked by autoplay policy; tap the play button to unlock",
     "voiceHint": "Tap to choose voice",
-    "voiceSwitched": "Voice"
+    "blockRetrying": "Failed, retrying",
+    "finishedThisBlock": "This block finished",
+    "moreBlocks": "more block(s) to read",
+    "askContinue": "Continue reading the following blocks?",
+    "continueReading": "Continue reading",
+    "edgeUnavailable": "Cannot use the selected voice: Edge direct or kernel WS proxy (kernel >= 3.7.0) is required. To avoid switching voices unexpectedly, other engines are not used automatically; you can pick an engine manually from the menu.",
+    "engineVoiceWarning": "may not be the selected voice"
 }

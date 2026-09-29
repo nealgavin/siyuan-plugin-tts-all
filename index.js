@@ -1408,6 +1408,11 @@ class TtsService {
     if (this.engine !== ENGINE.AUTO) {
       return [this.engine];
     }
+    // 严格锁定声源（默认行为）：自动模式下只用 Edge（直连 / 内核代理）。
+    // Edge 是唯一真正支持用户所选「晓晓 / 云希 / 曉臻 …」的引擎；
+    // 百度 / 有道 / 系统语音都各有内置音色，一旦降级过去，用户就会听到
+    // 「突然换人声」——这正是要避免的。宁可失败并明确报错，也不静默换声。
+    // 需要 HTTP / 系统语音时，可在菜单里手动指定引擎（那时不保证声源一致）。
     const list = [];
     if (USE_NODE_NET) {
       list.push(ENGINE.EDGE_DIRECT);
@@ -1415,7 +1420,6 @@ class TtsService {
     if (kernelSupportsWsProxy()) {
       list.push(ENGINE.EDGE_PROXY);
     }
-    list.push(ENGINE.HTTP, ENGINE.SYSTEM);
     return list;
   }
 
@@ -1467,67 +1471,82 @@ class TtsService {
 
   async _synthesizeWithFallback(text, gen) {
     const candidates = this._candidates();
+    if (!candidates.length) {
+      // 自动模式下没有任何 Edge 通道可用（如内核 < 3.7.0 的移动端）。
+      // 不做静默降级，直接说明原因与出路。
+      throw new Error(this.plugin.i18n.edgeUnavailable ||
+        "无法使用所选声源：需要 Edge 直连或内核 WS 代理（内核 ≥ 3.7.0）。" +
+        "为避免突然换人声，不会自动改用其它语音；可在菜单中手动指定引擎。");
+    }
+
     let lastError = null;
-    let attempted = false;
+    // 最多两轮：第一轮跳过「本次会话已失败过」的引擎；若一个都没轮到
+    // （全部躺在失败名单里），清空名单后**真正重试一轮**。
+    // 旧实现此时只清名单就抛错，会出现「没尝试就失败」，与「失败要重试」不符。
+    for (let round = 0; round < 2; round++) {
+      let attempted = false;
 
-    for (const name of candidates) {
-      if (this.failed.has(name)) {
-        continue;
+      for (const name of candidates) {
+        if (this.failed.has(name)) {
+          continue;
+        }
+        attempted = true;
+        try {
+          const instance = this._instance(name);
+          if (this._isEdge(name)) {
+            await instance.setMetadata(this.voice, DEFAULT_OUTPUT_FORMAT);
+          }
+          if (instance.available === false) {
+            throw new Error("引擎不可用");
+          }
+          const result = await instance.synthesize(text);
+          // Edge 返回裸 ArrayBuffer，播放层约定 playable 形如 { kind, data }；
+          // 此处统一包装，避免播放时取不到音频数据。
+          const wrapped = (result instanceof ArrayBuffer ||
+            (result && typeof result.byteLength === "number" && !result.kind))
+            ? { kind: "buffer", data: result }
+            : result;
+          if (wrapped && wrapped.kind === "buffer" &&
+            (!wrapped.data || !wrapped.data.byteLength)) {
+            // 声源与文本语种不匹配时 Edge 会返回 0 字节（如英文声源读中文），
+            // 必须抛错交给上层重试，而不是静默播空。
+            throw new Error(this._isEdge(name)
+              ? `声源「${voiceShortOf(this.voice)}」读不了这段内容（语种可能不匹配）`
+              : "引擎返回空音频");
+          }
+          if (this.active !== name) {
+            logger.info(`[TTS]\t使用引擎: ${name}`);
+          }
+          this.active = name;
+          this.lastEngineName = this.engineName(name);
+          return wrapped;
+        } catch (e) {
+          lastError = e;
+          // 期间用户切换了声源：这次失败是我们自己的 close() 造成的，属预期中断。
+          // 不能标记引擎失败：否则一次换声源就会永久跳过 Edge。
+          if (this.voiceGen !== gen) {
+            const changed = new Error("声源已切换");
+            changed.voiceChanged = true;
+            throw changed;
+          }
+          logger.warn(`[TTS]\t引擎 ${name} 失败:`, e && e.message ? e.message : e);
+          this.failed.add(name);
+          if (this.active === name) {
+            this.active = null;
+          }
+        }
       }
-      attempted = true;
-      try {
-        const instance = this._instance(name);
-        if (this._isEdge(name)) {
-          await instance.setMetadata(this.voice, DEFAULT_OUTPUT_FORMAT);
-        }
-        if (instance.available === false) {
-          throw new Error("引擎不可用");
-        }
-        const result = await instance.synthesize(text);
-        // Edge 引擎返回的是裸 ArrayBuffer，而播放层约定 playable 形如
-        // { kind: "buffer", data }；此处统一包装，避免播放时取不到音频数据。
-        const wrapped = (result instanceof ArrayBuffer ||
-          (result && typeof result.byteLength === "number" && !result.kind))
-          ? { kind: "buffer", data: result }
-          : result;
-        if (wrapped && wrapped.kind === "buffer" &&
-          (!wrapped.data || !wrapped.data.byteLength)) {
-          // 声源与文本语种不匹配时 Edge 会返回 0 字节（例如英文声源读中文）。
-          // 必须抛错才能让调度层降级到其它引擎，而不是静默跳过这一块。
-          throw new Error(this._isEdge(name)
-            ? `声源「${voiceShortOf(this.voice)}」读不了这段内容（语种可能不匹配），已尝试其它引擎`
-            : "引擎返回空音频");
-        }
-        if (this.active !== name) {
-          logger.info(`[TTS]\t使用引擎: ${name}`);
-        }
-        this.active = name;
-        this.lastEngineName = this.engineName(name);
-        return wrapped;
-      } catch (e) {
-        lastError = e;
-        // 期间用户切换了声源：这次失败是我们自己的 close() 造成的，属于预期中断。
-        // 不能把引擎标记为失败、更不能降级 —— 否则一次换声源就会永久跳过
-        // Edge 并落到「系统语音」，表现为「切换人声后播放失败」。
-        if (this.voiceGen !== gen) {
-          const changed = new Error("声源已切换");
-          changed.voiceChanged = true;
-          throw changed;
-        }
-        logger.warn(`[TTS]\t引擎 ${name} 失败，尝试降级:`, e && e.message ? e.message : e);
-        this.failed.add(name);
-        if (this.active === name) {
-          this.active = null;
-        }
+
+      if (attempted) {
+        break;
+      }
+      if (round === 0) {
+        logger.info("[TTS]\t引擎失败名单已重置，重新尝试");
+        this.failed.clear();
       }
     }
 
-    if (!attempted) {
-      // 所有引擎都已被标记失败，重置后允许重试一轮
-      this.failed.clear();
-      throw lastError || new Error("所有语音引擎均不可用，请检查网络后重试");
-    }
-    throw lastError || new Error("没有可用的语音引擎");
+    throw lastError || new Error("所有语音引擎均不可用，请检查网络后重试");
   }
 
   setVoice(voice) {
@@ -1634,6 +1653,15 @@ async function ensureAudioRunning(timeout = 1200) {
   return ctx.state === "running";
 }
 
+// 单块朗读失败后的重试次数与退避基数。
+// 之前的实现是「失败即跳过该块」，网络抖动时会白白漏读一整块。
+const MAX_BLOCK_RETRY = 2;
+const BLOCK_RETRY_DELAY = 600;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 class Player {
   constructor(service, controller) {
     this.controller = controller;
@@ -1700,6 +1728,23 @@ class Player {
       });
 
     return this.loadPromise;
+  }
+
+  /**
+   * 清掉上次失败的缓存并**真正重新合成**。
+   *
+   * load() 会把 loadPromise / error / playable 缓存下来，成功前不会重来；
+   * 若重试时不清缓存，player.play() 只会把同一个旧 error 再抛一遍，
+   * 网络根本没被重新请求 —— 那样的「重试」是假的。
+   */
+  async retryLoad(block) {
+    this.loadPromise = null;
+    this.error = null;
+    this.playable = null;
+    this.loaded = false;
+    this.loading = false;
+    this.isEmpty = block ? block.isEmpty() : this.isEmpty;
+    return this.load(block || this.block);
   }
 
   async setRate(rate) {
@@ -1928,22 +1973,43 @@ class Controller {
       `${this.plugin.i18n.playing || "播放"} ${this.playIndex + 1}/${this.blocks.length}${engineTip}`
     );
 
-    try {
-      await player.setRate(this.playbackRate);
-      await player.play();
-    } catch (e) {
-      // 单块失败（网络异常 / 内容无法合成）不影响后续块
-      logger.error("[Controller]\tplay block failed:", e);
-      if (player.block) {
-        player.block.unhighlight();
-      }
-      // 第一块就失败通常说明是系统性问题（引擎不可用 / 被自动播放策略拦截），
-      // 手机上控制台看不到，必须直接提示用户，否则表现为「点了没反应」
-      const reason = e && e.message ? e.message : String(e);
-      if (this.playIndex === 0) {
+    // 失败重试而不是跳过：网络抖动不该让用户白丢一整块内容。
+    let lastError = null;
+    for (let attempt = 0; attempt <= MAX_BLOCK_RETRY; attempt++) {
+      try {
+        await player.setRate(this.playbackRate);
+        if (attempt > 0) {
+          // 重试必须重新合成：否则只是把缓存的旧错误再抛一遍
+          await player.retryLoad(player.block);
+        }
+        await player.play();
+        lastError = null;
+        break;
+      } catch (e) {
+        lastError = e;
+        const reason = e && e.message ? e.message : String(e);
+        logger.error(`[Controller]\tplay block failed (第 ${attempt + 1} 次):`, e);
+        if (player.block) {
+          player.block.unhighlight();
+        }
+        // 用户已停止 / 已切换朗读：立即退出，不再重试也不再推进
+        if (this.stopped) {
+          return;
+        }
+        if (attempt < MAX_BLOCK_RETRY) {
+          this.plugin.setStatus(
+            `${this.plugin.i18n.blockRetrying || "朗读失败，正在重试"} ${attempt + 1}/${MAX_BLOCK_RETRY}（${reason}）`);
+          await sleep(BLOCK_RETRY_DELAY * (attempt + 1));
+          if (this.stopped) {
+            return;
+          }
+          continue;
+        }
+        // 重试用尽：明确告知，并把这块留在原地等用户决定，不静默跳过
         showMessage(`${this.plugin.i18n.blockFailed || "朗读失败"}：${reason}`, 6000);
+        this.plugin.setStatus(
+          `${this.plugin.i18n.blockFailed || "朗读失败"}（${reason}）`);
       }
-      this.plugin.setStatus(`${this.plugin.i18n.blockFailed || "该块朗读失败，已跳过"}（${reason}）`);
     }
     // await 期间可能已被 stop()（用户又双击了别的块）或被新一次朗读接管，
     // 这时必须立刻退出，否则会推进索引并递归播放，造成多路声音重叠。
@@ -1951,7 +2017,21 @@ class Controller {
       return;
     }
     this.players.shift();
+    if (lastError) {
+      // 本块重试仍失败：停下并询问是否继续读后续块，而不是直接跳过
+      if (typeof this.plugin.onBlockFailed === "function") {
+        this.plugin.onBlockFailed(this, lastError);
+      }
+      return;
+    }
     this.playIndex++;
+    // 已播完列表最后一块：若还有后续块（先只读了一个块），询问是否继续
+    if (this.players.length === 0 && this.cacheIndex >= this.blocks.length) {
+      if (typeof this.plugin.onBlocksFinished === "function") {
+        this.plugin.onBlocksFinished(this);
+      }
+      return;
+    }
     this.play();
   }
 
@@ -2289,9 +2369,15 @@ module.exports = class TTSPlugin extends Plugin {
       detail.menu.addItem({
         icon: "iconRecord",
         label: this.i18n.menuName,
-        click: () => {
+        click: async () => {
+          // 用户手势的同步阶段必须先解锁音频（await 之后手势失效会无声）
           unlockAudio();
-          this.startBlocks(blocks);
+          // 只选中一个块时，取「该块之后」的内容作为可继续的余量：
+          // 读完这一块后提示是否继续，而不是直接结束。
+          const tail = blocks.length === 1
+            ? await this.fetchTailBlocks(detail.protyle.block.rootID, blocks[0])
+            : null;
+          this.startBlocks(blocks, tail);
         },
       });
 
@@ -2350,7 +2436,7 @@ module.exports = class TTSPlugin extends Plugin {
     this.voiceLabelEl = null;
   }
 
-  startBlocks(blockElements) {
+  startBlocks(blockElements, keepTail) {
     // 移动端/鸿蒙：必须在用户点击的同步阶段解锁音频，
     // 否则合成完成时手势已失效，AudioContext 处于 suspended 会完全无声
     unlockAudio();
@@ -2359,7 +2445,120 @@ module.exports = class TTSPlugin extends Plugin {
       playbackRate: this.playbackRate,
     }, this);
     this.controller.loadBlocks(blockElements);
+    // 「继续读后续块」的余量：只读一个块时，把该块之后的内容留在这里，
+    // 等本块读完再由用户决定是否继续（见 askContinue）。
+    this.pendingTail = Array.isArray(keepTail) ? keepTail : null;
     this.controller.play();
+  }
+
+  // 一次朗读自然读完（列表已空）。若还有留存的后续块，提示是否继续。
+  onBlocksFinished(controller) {
+    if (this.controller !== controller) {
+      return;
+    }
+    const tail = this.pendingTail;
+    if (!tail || !tail.length) {
+      controller.stop();
+      this.setStatus(this.i18n.idle || "空闲");
+      return;
+    }
+    const count = tail.length;
+    // 保持播放态：暂停在末尾等用户决定，悬浮条不消失
+    controller.isPaused = true;
+    this.markPausedIcon();
+    this.setStatus(`${this.i18n.finishedThisBlock || "本块已读完"} · ${count} ${this.i18n.moreBlocks || "个块待续"}`);
+    showMessage(`${this.i18n.finishedThisBlock || "本块已读完"}，${this.i18n.askContinue || "是否继续读后续块？"}（${count}）`, 8000);
+    this.showContinueButton(count);
+  }
+
+  // 单块重试用尽。停在原地，让用户决定继续还是放弃，不静默跳过。
+  onBlockFailed(controller, err) {
+    if (this.controller !== controller) {
+      return;
+    }
+    const reason = err && err.message ? err.message : String(err);
+    controller.isPaused = true;
+    this.markPausedIcon();
+    this.setStatus(`${this.i18n.blockFailed || "朗读失败"}（${reason}）`);
+    // 失败块本身留在原地不动，后续块作为「可继续」的余量存起来，
+    // 否则按钮显示了、点了却读不到东西（pendingTail 为空 → continueReading 直接返回）。
+    const rest = controller.blocks.slice(controller.playIndex + 1)
+      .filter((b) => b && !b.isEmpty())
+      .map((b) => b.el)
+      .filter((el) => el && el.nodeType === 1);  // 只统计真正能读的元素，避免按钮数字虚高
+    // 没有后续块可读时就不放「继续」按钮（点了也没内容），只保留错误提示
+    if (rest.length) {
+      this.pendingTail = rest;
+      this.showContinueButton(rest.length, true);
+    } else {
+      controller.stop();
+    }
+  }
+
+  // 进入「等待用户决定」状态时，把暂停按钮图标改成播放态
+  markPausedIcon() {
+    document.querySelectorAll('.tts-nav-btn[data-type="pause"] use').forEach((el) => {
+      el.setAttribute("xlink:href", "#iconPlay");
+    });
+  }
+
+  // 在悬浮条 / 状态栏上临时显示一个「继续」按钮。
+  // 直接操作现有 DOM，避免大改两个控制条的模板结构。
+  showContinueButton(count, isRetry) {
+    this.hideContinueButton();
+    const onMobile = this.mobileBar && this.mobileBar.style.display !== "none";
+    // 移动端悬浮条本身就是容器，要插到条**内**；状态栏则插到行内同级的末尾。
+    // （若统一用 target.parentElement，移动端会把按钮插到 body 上，跑到条外面去。）
+    const host = onMobile ? this.mobileBar
+      : (this.statusIconTemp && this.statusIconTemp.parentElement);
+    if (!host) {
+      return;
+    }
+    const btn = document.createElement("span");
+    btn.className = "tts-nav-btn tts-continue-btn";
+    btn.setAttribute("data-type", "continue");
+    btn.title = this.i18n.askContinue || "是否继续读后续块？";
+    btn.innerHTML = `<svg><use xlink:href="#iconPlay"></use></svg>`;
+    // 同步阶段先解锁音频，否则 await 之后手势失效会无声
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      unlockAudio();
+      this.continueReading();
+    });
+    host.appendChild(btn);
+    this.continueBtn = btn;
+  }
+
+  hideContinueButton() {
+    if (this.continueBtn) {
+      try {
+        this.continueBtn.remove();
+      } catch (e) { /* ignore */ }
+      this.continueBtn = null;
+    }
+  }
+
+  // 用户点了「继续」：把留存的后续块接着读下去
+  continueReading() {
+    this.hideContinueButton();
+    const tail = this.pendingTail;
+    this.pendingTail = null;
+    if (!tail || !tail.length) {
+      return;
+    }
+    // 余量可能是 DOM 元素（来自 fetchTailBlocks）或 Block 对象（来自控制器）
+    const els = tail.map((b) => (b && b.el) ? b.el : b)
+      .filter((el) => el && el.nodeType === 1);
+    if (els.length) {
+      this.startBlocks(els);
+      return;
+    }
+    const text = tail.map((b) => (b && b.content) || (typeof b === "string" ? b : ""))
+      .filter((t) => t && t.trim()).join("\n");
+    if (text) {
+      this.startRead([text]);
+    }
   }
 
   // 双击块跳转朗读的绑定。
@@ -2484,6 +2683,8 @@ module.exports = class TTSPlugin extends Plugin {
   }
 
   stopReading() {
+    this.hideContinueButton();
+    this.pendingTail = null;
     if (this.controller) {
       this.controller.stop();
     }
@@ -2649,6 +2850,24 @@ module.exports = class TTSPlugin extends Plugin {
     return allBlocks;
   }
 
+  // 取「指定块之后」的文档块（不含该块本身），用于「读完本块后是否继续」。
+  // 返回的是 DOM 元素数组，交给 startBlocks 时会被包成 Block。
+  async fetchTailBlocks(rootID, blockEl) {
+    try {
+      const nodeId = blockEl && typeof blockEl.getAttribute === "function"
+        ? blockEl.getAttribute("data-node-id") : null;
+      if (!rootID || !nodeId) {
+        return null;
+      }
+      const all = await this.fetchDocBlocks(rootID, nodeId);
+      // all[0] 是当前块自身，其余才是后续块
+      return all.length > 1 ? all.slice(1) : null;
+    } catch (e) {
+      logger.warn("[TTS]\t获取后续块失败（不影响本块朗读）", e);
+      return null;
+    }
+  }
+
   async fetchSyncPost(url, data, returnType = "json") {
     const init = { method: "POST" };
     if (data) {
@@ -2747,13 +2966,15 @@ module.exports = class TTSPlugin extends Plugin {
       },
     });
 
-    // 语音引擎（全平台自动降级，也可手动指定）
+    // 语音引擎。自动模式严格锁定所选声源（只用 Edge）；
+    // HTTP / 系统语音各有内置音色，手动选择时会明确标注「可能不是所选声源」。
+    const warn = this.i18n.engineVoiceWarning || "可能不是所选声源";
     const engineMenus = [
       [ENGINE.AUTO, this.i18n.engineAuto, ""],
       [ENGINE.EDGE_DIRECT, this.i18n.engineEdgeDirect, USE_NODE_NET ? "" : this.i18n.engineDesktopOnly],
       [ENGINE.EDGE_PROXY, this.i18n.engineEdgeProxy, ""],
-      [ENGINE.HTTP, this.i18n.engineHttp, ""],
-      [ENGINE.SYSTEM, this.i18n.engineSystem, ""],
+      [ENGINE.HTTP, this.i18n.engineHttp, warn],
+      [ENGINE.SYSTEM, this.i18n.engineSystem, warn],
     ].map(([value, label, tip]) => ({
       icon: value === this.engine ? "iconSelect" : "",
       label: tip ? `${label}（${tip}）` : label,

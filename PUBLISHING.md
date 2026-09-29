@@ -1,7 +1,7 @@
 # 上架思源集市 · 操作手册
 
 > 本手册对应 **路线 B（作为独立新集市包上架）**。
-> 仓库：`nealgavin/siyuan-plugin-tts-all` ｜ 包名：`siyuan-plugin-tts-all` ｜ 版本：`1.2.4`
+> 仓库：`nealgavin/siyuan-plugin-tts-all` ｜ 包名：`siyuan-plugin-tts-all` ｜ 版本：`1.2.5`
 
 ---
 
@@ -10,6 +10,7 @@
 | 步骤 | 状态 |
 | --- | --- |
 | 第 1 步：推送仓库 + 打 tag | ✅ 已完成（tag `v1.2.4` → `be961da`） |
+| 第 1 步（v1.2.5）：重试 / 继续读 / 人声锁定 | ⏳ 本地已完成，待推送 tag `v1.2.5` |
 | GitHub Actions 打包 | ✅ 已成功（run 36537545088） |
 | 创建 Release | ✅ 已发布，资产 `package.zip` 93,632 字节 |
 | 第 2 步：向集市提 PR | ⬜ **未完成 —— 这是「集市里看不到」的唯一原因** |
@@ -50,7 +51,7 @@ cd /Users/nealgavin/Documents/siyuan/siyuan-plugin-tts
 ./release.sh
 ```
 
-脚本会依次：校验清单 → 校验图标体积 → 校验 JS 语法 → 提交 → 打 tag `v1.2.4` → 推送。
+脚本会依次：校验清单 → 校验图标体积 → 校验 JS 语法 → 提交 → 打 tag `v1.2.5` → 推送。
 
 推送时会要求输入 GitHub **用户名**和 **Personal Access Token**（不是密码）。
 Token 需勾选 `repo` 权限，在 https://github.com/settings/tokens 生成。
@@ -121,7 +122,7 @@ curl -s https://api.github.com/repos/nealgavin/siyuan-plugin-tts-all/releases/la
 
 > 若只想立刻在本机用上，**不必等集市**：把
 > `/Users/nealgavin/Documents/siyuan/siyuan-plugin-tts` 整个目录拷到
-> `<工作空间>/data/plugins/siyuan-plugin-tts-all/` 后重启思源即可（本地已装好 v1.2.4）。
+> `<工作空间>/data/plugins/siyuan-plugin-tts-all/` 后重启思源即可（本地已装好 v1.2.5）。
 
 ---
 

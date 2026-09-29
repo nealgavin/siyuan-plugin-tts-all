@@ -13,7 +13,7 @@
     "engineDesktopOnly": "仅桌面端",
     "loading": "加载中...",
     "playing": "播放",
-    "blockFailed": "该块朗读失败，已跳过",
+    "blockFailed": "该块朗读失败",
     "loadFailed": "获取文档内容失败",
     "noSelection": "没有可以朗读的选中内容",
     "playbackRate": "播放速率",
@@ -23,7 +23,12 @@
     "quickOpen": "朗读当前选中内容",
     "scrollToCurrent": "滚动到当前播放块",
     "diagnose": "环境自检",
-    "audioBlocked": "音频被系统自动播放策略阻止，请点一下播放按钮解锁",
     "voiceHint": "点击选择声源",
-    "voiceSwitched": "声源"
+    "blockRetrying": "朗读失败，正在重试",
+    "finishedThisBlock": "本块已读完",
+    "moreBlocks": "个块待续",
+    "askContinue": "是否继续读后续块？",
+    "continueReading": "继续读后续块",
+    "edgeUnavailable": "无法使用所选声源：需要 Edge 直连或内核 WS 代理（内核 ≥ 3.7.0）。为避免突然换人声，不会自动改用其它语音；可在菜单中手动指定引擎。",
+    "engineVoiceWarning": "可能不是所选声源"
 }
