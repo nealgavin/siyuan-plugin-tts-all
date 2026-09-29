@@ -5,6 +5,23 @@
 
 ---
 
+## 当前进度（已核实）
+
+| 步骤 | 状态 |
+| --- | --- |
+| 第 1 步：推送仓库 + 打 tag | ✅ 已完成（tag `v1.2.4` → `be961da`） |
+| GitHub Actions 打包 | ✅ 已成功（run 36537545088） |
+| 创建 Release | ✅ 已发布，资产 `package.zip` 93,632 字节 |
+| 第 2 步：向集市提 PR | ⬜ **未完成 —— 这是「集市里看不到」的唯一原因** |
+| 集市收录 | ⬜ 待 PR 合并 |
+
+**关键结论**：推送成功 ≠ 集市可见。集市是一份人工维护的白名单
+（`siyuan-note/bazaar` 仓库的 `plugins.txt`），必须提 PR 被合并后才会收录。
+我核实过官方索引 `stage/plugins.json`：共 **529** 个插件，其中只有旧的
+`siyuan-plugin-tts` v1.1.1，**没有** `siyuan-plugin-tts-all`。
+
+---
+
 ## 为什么不是「更换维护者」
 
 我核对了集市仓库 `siyuan-note/bazaar` 的校验源码（`rules/diff.go`），原文是：
@@ -20,9 +37,13 @@
 
 ---
 
-## 第 1 步：推送仓库并打 tag
+## 第 1 步：推送仓库并打 tag ✅ 已完成
+
+> 本节保留备查（下次发版还要用）。首次已于 2026-09-29 完成。
 
 需要本机具备 GitHub 推送凭据（HTTPS 用户名 + Personal Access Token，或 SSH）。
+`release.sh` 现在会在推送前做 `--dry-run` 预检，凭证不可用时立即退出并打印配置步骤，
+不会留下「本地有 tag、远端没有」的孤儿状态。
 
 ```bash
 cd /Users/nealgavin/Documents/siyuan/siyuan-plugin-tts
@@ -55,8 +76,21 @@ curl -s https://api.github.com/repos/nealgavin/siyuan-plugin-tts-all/releases/la
    nealgavin/siyuan-plugin-tts-all
    ```
 
-   我用脚本对官方最新 `plugins.txt` 做了修改并校验（恰好新增 1 行、无下架、无重复）：见
-   `/tmp/bazaar-pr/plugins.txt`，可直接对照使用。
+   已按官方最新 `plugins.txt`（529 行）改好并严格校验：恰好新增 1 行、无删除、无重复。
+   文件在 `/tmp/pr-ready/plugins.txt`，可直接使用（`.orig` 是原始备份）。
+
+   diff 内容仅为：
+
+   ```diff
+   @@ -527,3 +527,4 @@
+    famotime/siyuan-time-spent
+    wmy2981/editor-siyuan
+    HaoCeans/siyuan-mood
+   +nealgavin/siyuan-plugin-tts-all
+   ```
+
+   > 注意：不要动第 48 行的 `zuoez02/siyuan-plugin-tts`。集市规定一个 PR
+   > 只能做一件事（只新增 1 个包 / 只换维护者 / 只下架），混入删除会被判不合格。
 
 3. 提 PR 到 `main` 分支。标题建议：
 
@@ -64,13 +98,30 @@ curl -s https://api.github.com/repos/nealgavin/siyuan-plugin-tts-all/releases/la
    Add plugin: nealgavin/siyuan-plugin-tts-all
    ```
 
-   PR 描述可写：
+   PR 正文已写好，可直接粘贴：`/tmp/pr-ready/PR_BODY.md`
+   （含 PR 模板要求的 2 项侵权/开源确认、Release 自检项、与旧包的区别说明）。
 
-   > Add a new TTS plugin for all platforms (desktop / mobile / tablet / HarmonyOS).
-   > Based on zuoez02/siyuan-plugin-tts (MIT), with multi-engine fallback added.
-   > Independent package name `siyuan-plugin-tts-all`; the original `zuoez02/siyuan-plugin-tts` stays listed and untouched.
+4. 等待 **PR Check** 自动校验通过，维护者合并。
 
-4. 等待 **PR Check** 自动校验通过，维护者合并。合并后 1~3 小时内集市索引更新。
+5. **合并后的可见时间**：集市索引每 1~3 小时刷新一次（可看
+   [Stage workflow](https://github.com/siyuan-note/bazaar/actions/workflows/stage.yml)）。
+   索引更新后，在思源里 **重启一次**（或「设置 → 集市」手动刷新）即可看到，
+   因为客户端会缓存集市索引。
+
+---
+
+## 合并后如何在思源里看到
+
+1. 等索引刷新（或到 Stage workflow 页面确认已部署）
+2. **完全退出并重启思源** —— 集市索引有本地缓存，不重启可能刷不出来
+3. 打开「设置 → 集市 → 插件」，搜索 **朗读** 或向下浏览
+4. 应能看到「**文本朗读（全平台）**」——注意与旧的「文本朗读」（作者 zuoez02，
+   停在 v1.1.1）区分：新包的名字带「（全平台）」
+5. 点「下载」，装好后到「设置 → 集市 → 已下载」里启用
+
+> 若只想立刻在本机用上，**不必等集市**：把
+> `/Users/nealgavin/Documents/siyuan/siyuan-plugin-tts` 整个目录拷到
+> `<工作空间>/data/plugins/siyuan-plugin-tts-all/` 后重启思源即可（本地已装好 v1.2.4）。
 
 ---
 
@@ -125,6 +176,8 @@ curl -s https://api.github.com/repos/nealgavin/siyuan-plugin-tts-all/releases/la
   注意 `BASE_VERSION` 基线（当前 `1.2.3`），版本号只能升不能降。
 - **`.gitignore` 已加**：`package.zip` 由 CI 生成，不入库；`release.sh` 需要入库
   （CI 不依赖它，但保留便于你一键发布）。
+- **不要重复提 PR**：PR Check 失败时只需修好包仓库（重发 Release），
+  约 20 分钟内会有定时任务自动重检并更新评论，不要另开新 PR。
 
 ## 环境限制（如实说明）
 
@@ -134,3 +187,7 @@ curl -s https://api.github.com/repos/nealgavin/siyuan-plugin-tts-all/releases/la
   不支持图像输入），图标处理是按尺寸/像素/体积用 ImageMagick 定量完成的，
   **最终视觉效果建议打开 `icon.png` 确认**。
 - 功能验证基于思源内核 API 实测 + 沙箱模拟，**未在鸿蒙真机上验证**。
+- 集市规则校验是**本地按 `rules/*.go` 重写**的模拟（29 项），**不等于官方 CI**。
+  本想直接运行官方校验器，但本机 Go 为 1.13.6，而集市 `go.mod` 要求 Go 1.26.5，
+  无法编译；最终以 **PR Check 的结果为准**。
+- 核实时 GitHub API 曾触发速率限制，故部分结论改用 `raw.githubusercontent.com` 直取。
