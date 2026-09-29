@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 #
-# 一键发布脚本（路线 C：先发布到自己的 fork）
+# 一键发布脚本（路线 B：作为独立新集市包发布）
 #
 # 用法：
 #   ./release.sh              # 使用 plugin.json 中的版本号
-#   ./release.sh 1.2.1        # 指定版本号并自动写入 plugin.json
+#   ./release.sh 1.2.4        # 指定版本号并自动写入 plugin.json
+#
+# 说明：本仓库是独立上架的集市插件（非 zuoez02 的维护者转移）。
+#       每次推 tag 后 GitHub Actions 会自动打包 package.zip 并创建 Release，
+#       集市会在 1~3 小时内自动跟随更新。
 #
 # 前置条件：本机需能推送到 GitHub（HTTPS 输入用户名 + Personal Access Token，
 # 或改用 SSH remote）。推送凭证方式见脚本末尾输出。
@@ -73,17 +77,20 @@ node -e '
 info "校验 JS 语法"
 node --check index.js && echo "  ✓ index.js 语法正确"
 
-# ── 3. 版本必须高于已上架版本 ────────────────────────────────────
-info "版本比较（已上架 1.1.1）"
+# ── 3. 版本必须高于最近一次发布 ──────────────────────────────────
+# 本包以独立集市条目上架（route B），基线为首次上架版本 1.2.3。
+# 后续发布若已上架新版本，可通过 BASE_VERSION 环境变量抬高基线。
+info "版本比较（基线 ${BASE_VERSION:-1.2.3}）"
 node -e '
   const cmp = (a, b) => {
     const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i]||0) !== (pb[i]||0)) return (pa[i]||0) - (pb[i]||0); }
     return 0;
   };
+  const base = process.env.BASE_VERSION || "1.2.3";
   const v = require("./plugin.json").version;
-  if (cmp(v, "1.1.1") <= 0) { console.error(`  ❌ ${v} 未高于已上架版本 1.1.1`); process.exit(1); }
-  console.log(`  ✓ ${v} > 1.1.1`);
+  if (cmp(v, base) < 0) { console.error(`  ❌ ${v} 低于基线版本 ${base}`); process.exit(1); }
+  console.log(`  ✓ ${v} >= ${base}`);
 ' || die "版本号未提升"
 
 # ── 4. 提交并打 tag ──────────────────────────────────────────────
@@ -122,5 +129,16 @@ GitHub Actions 正在自动打包并创建 Release：
 
 Release 生成后（约 1 分钟）可在该地址查看：
   https://github.com/$REPO/releases
+
+上架状态（route B：作为独立新集市包上架）：
+  本插件在集市中是独立条目，与 zuoez02/siyuan-plugin-tts 并存
+  （后者停在 1.1.1，两者可同时安装）。上架后集市会自动跟随
+  本仓库的 Release 更新，无需再次提 PR。
+
+首次上架步骤：
+  1. fork siyuan-note/bazaar，在 plugins.txt 末尾追加一行：
+       $REPO
+  2. 向 main 分支提 PR，等待 PR Check 通过并合并
+  3. 之后每次发布只需推 tag，集市会在 1~3 小时内自动更新
 
 EOF
