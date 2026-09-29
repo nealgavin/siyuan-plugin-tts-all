@@ -2381,16 +2381,23 @@ async function diagnose(plugin) {
   // 7. 结论建议
   lines.push("");
   lines.push("—— 建议 ——");
+  // 注意：「自动」模式只锁 Edge（保声源），**不会**降级到在线语音/系统语音，
+  // 因为那两个引擎有各自的内置音色，降级过去就成了「突然换人声」。
+  const edgeOk = USE_NODE_NET || (wsOk && !!token);
   if (USE_NODE_NET) {
     lines.push("桌面端优先使用 Edge 直连，音质最好。");
   } else {
-    lines.push("移动端推荐「自动」引擎，会依次尝试 Edge 内核代理 → 在线语音 → 系统语音。");
+    lines.push("移动端用「自动」引擎即可：走 Edge 内核代理，声源与所选一致。");
   }
-  if (!wsOk) {
-    lines.push("内核低于 3.7.0：Edge 内核代理不可用，将直接使用在线语音。");
+  if (!edgeOk) {
+    lines.push("⚠ 当前无法使用 Edge（保声源）通路："
+      + (!wsOk ? "内核低于 3.7.0，内核代理不可用。" : "缺少 API Token。")
+      + "自动模式不会静默改用其它声音；请在菜单里手动指定「在线语音」或「系统语音」（会换成它们的内置音色）。");
   }
-  if (!token) {
-    lines.push("缺少 API Token 会同时禁用「Edge 内核代理」和「在线语音」两条路径。");
+  if (isHarmonyOS() && !USE_NODE_NET) {
+    lines.push("鸿蒙说明：思源鸿蒙版的 ArkWeb 一般**不提供**系统音色（上面「系统语音」为"
+      + "不支持或不含音色即属此情况），且插件无法调用鸿蒙原生语音（应用壳未提供 JS 桥）。"
+      + "请用「自动」引擎走 Edge 内核代理。");
   }
 
   return lines.join("\n");
