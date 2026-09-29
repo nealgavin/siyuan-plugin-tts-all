@@ -2,7 +2,7 @@
     "name": "siyuan-plugin-tts-all",
     "author": "nealgavin",
     "url": "https://github.com/nealgavin/siyuan-plugin-tts-all",
-    "version": "1.2.6",
+    "version": "1.2.7",
     "minAppVersion": "3.1.28",
     "backends": [
         "windows",

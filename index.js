@@ -1658,6 +1658,26 @@ async function ensureAudioRunning(timeout = 1200) {
 const MAX_BLOCK_RETRY = 2;
 const BLOCK_RETRY_DELAY = 600;
 
+// 从块元素向上找文档 ID（思源把 data-root-id 挂在 protyle 容器上，
+// 不同版本位置不一，这里多找一层并允许元素自身带该属性）
+function rootIdOf(el) {
+  if (!el || typeof el.closest !== "function") {
+    return null;
+  }
+  const holder = el.closest("[data-root-id]");
+  const id = (holder && holder.getAttribute("data-root-id")) || el.getAttribute("data-root-id");
+  return id || null;
+}
+
+// 当前打开的文档 ID；无法确定时返回 null
+function currentDocRootId() {
+  const w = document.querySelector(".protyle-wysiwyg");
+  if (!w) {
+    return null;
+  }
+  return rootIdOf(w) || w.getAttribute("data-node-id") || null;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1964,9 +1984,14 @@ class Controller {
       return;
     }
 
-    document.querySelectorAll('.tts-nav-btn[data-type="pause"] use').forEach((el) => {
-      el.setAttribute("xlink:href", "#iconPause");
-    });
+    if (typeof this.plugin.markPlayState === "function") {
+      this.plugin.markPlayState("playing");
+    }
+
+    // 记住这一块：暂停/停止后点「继续」时要能回到上次朗读的位置
+    if (player.block && typeof this.plugin.rememberBlock === "function") {
+      this.plugin.rememberBlock(player.block);
+    }
 
     const engineTip = this.service.lastEngineName ? ` · ${this.service.lastEngineName}` : "";
     this.plugin.setStatus(
@@ -2052,9 +2077,9 @@ class Controller {
     if (block) {
       block.unhighlight();
     }
-    document.querySelectorAll('.tts-nav-btn[data-type="pause"] use').forEach((el) => {
-      el.setAttribute("xlink:href", "#iconRecord");
-    });
+    if (typeof this.plugin.markPlayState === "function") {
+      this.plugin.markPlayState("idle");
+    }
     this.plugin.hideControlBar(this);
   }
 
@@ -2859,9 +2884,12 @@ module.exports = class TTSPlugin extends Plugin {
   addMenu(rect) {
     const menu = new Menu("ttsPluginTopBarMenu");
 
+    // 播放中才是「暂停」，暂停/已停止/读完都是「继续」（点了会重新找起点）
+    const isPlaying = !!(this.controller && !this.controller.stopped && !this.controller.isPaused
+      && this.controller.players && this.controller.players.length);
     menu.addItem({
-      icon: "iconPause",
-      label: this.controller && this.controller.isPaused ? this.i18n.resume : this.i18n.pause,
+      icon: isPlaying ? "iconPause" : "iconPlay",
+      label: isPlaying ? this.i18n.pause : this.i18n.resume,
       click: () => this.togglePause(),
     });
 
@@ -2954,23 +2982,100 @@ module.exports = class TTSPlugin extends Plugin {
     });
   }
 
-  togglePause() {
-    if (!this.controller) {
+  // 播放/暂停按钮的统一状态。state: "playing" | "paused" | "idle"
+  // 三种状态都让图标与提示文字保持一致（提示文字在手机上就是唯一的说明）。
+  markPlayState(state) {
+    const icon = state === "playing" ? "#iconPause" : (state === "paused" ? "#iconPlay" : "#iconRecord");
+    const label = state === "playing" ? (this.i18n.pause || "暂停") : (this.i18n.resume || "继续");
+    document.querySelectorAll('.tts-nav-btn[data-type="pause"]').forEach((btn) => {
+      btn.setAttribute("title", label);
+      const use = btn.querySelector("use");
+      if (use) {
+        use.setAttribute("xlink:href", icon);
+      }
+    });
+  }
+
+  // 记录「上次朗读的块」。停止后依然保留，所以停止后再点「继续」能接着读。
+  rememberBlock(block) {
+    if (!block || !block.el || typeof block.el.getAttribute !== "function") {
       return;
     }
+    const id = block.el.getAttribute("data-node-id");
+    if (!id) {
+      return;
+    }
+    this.lastNodeId = id;
+    this.lastRootId = rootIdOf(block.el) || this.lastRootId || null;
+  }
+
+  // 播放/暂停按钮，兼作「继续」：
+  //   播放中 → 暂停；暂停中 → 继续；已停止或没有在进行的朗读 → 重新找起点开始读
+  togglePause() {
     // 恢复播放同样属于用户手势，借此机会再次解锁音频
     unlockAudio();
-    if (this.controller.isPaused) {
-      this.controller.resume();
-      document.querySelectorAll('.tts-nav-btn[data-type="pause"] use').forEach((el) => {
-        el.setAttribute("xlink:href", "#iconPause");
-      });
-    } else {
-      this.controller.pause();
-      document.querySelectorAll('.tts-nav-btn[data-type="pause"] use').forEach((el) => {
-        el.setAttribute("xlink:href", "#iconPlay");
-      });
+    const c = this.controller;
+    if (c && !c.stopped && Array.isArray(c.players) && c.players.length) {
+      const paused = c.isPaused;
+      if (paused) {
+        c.resume();
+      } else {
+        c.pause();
+      }
+      this.markPlayState(paused ? "playing" : "paused");
+      return;
     }
+    // 没有可继续的朗读（已停止 / 从未开始 / 已读完）：当作「继续」处理
+    this.resumeReading();
+  }
+
+  // 「继续」：按优先级决定从哪读 ——
+  //   ① 当前选中的块  ② 上一次朗读的块  ③ 文档第一个块
+  // （①②都没有时自然落到③，也就是「不知道从哪个块开始就从第一个块开始」）
+  async resumeReading() {
+    unlockAudio();
+
+    // ① 选中的块（与块菜单一致：从该块读到文档末尾）
+    let startEl = null;
+    let rootID = null;
+    const selected = document.querySelectorAll(".protyle-wysiwyg--select");
+    if (selected.length) {
+      startEl = selected[0];
+      rootID = rootIdOf(startEl);
+    }
+
+    // ② 上次朗读的块
+    if (!startEl && this.lastNodeId) {
+      startEl = document.querySelector(`.protyle-wysiwyg [data-node-id="${this.lastNodeId}"]`);
+      if (startEl) {
+        rootID = rootIdOf(startEl) || rootID;
+      }
+    }
+
+    // 依次尝试：已定位的文档 → 当前打开的文档 → 上次朗读所在的文档
+    const tried = [];
+    const push = (v) => {
+      if (v && tried.indexOf(v) === -1) {
+        tried.push(v);
+      }
+    };
+    push(rootID);
+    push(currentDocRootId());
+    push(this.lastRootId);
+
+    for (const id of tried) {
+      // 有起点块：从该块开始；没有起点块：从第一个块开始读整篇
+      let blocks = startEl ? await this.fetchBlocksFrom(id, startEl) : await this.fetchDocBlocks(id, null);
+      if (!blocks.length && startEl) {
+        // 起点块不属于该文档（例如正在看另一篇）→ 该文档从第一个块开始
+        blocks = await this.fetchDocBlocks(id, null);
+      }
+      if (blocks.length) {
+        this.startBlocks(blocks);
+        return;
+      }
+    }
+    showMessage(this.i18n.loadFailed || "获取文档内容失败");
   }
 
   addStatus() {
@@ -3030,7 +3135,7 @@ module.exports = class TTSPlugin extends Plugin {
     bar.className = "tts-mobile-bar";
     bar.style.display = "none";
     bar.innerHTML = `
-      <span class="tts-nav-btn" data-type="pause" title="${this.i18n.pause}">
+      <span class="tts-nav-btn" data-type="pause" title="${this.i18n.resume}">
         <svg><use xlink:href="#iconRecord"></use></svg>
       </span>
       <span class="tts-mobile-content">${this.i18n.title}</span>
