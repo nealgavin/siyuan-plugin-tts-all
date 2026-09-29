@@ -10,8 +10,10 @@
 #       每次推 tag 后 GitHub Actions 会自动打包 package.zip 并创建 Release，
 #       集市会在 1~3 小时内自动跟随更新。
 #
-# 前置条件：本机需能推送到 GitHub（HTTPS 输入用户名 + Personal Access Token，
-# 或改用 SSH remote）。推送凭证方式见脚本末尾输出。
+# 前置条件：本机需能推送到 GitHub。
+#   ⚠ GitHub 已不支持用「账号密码」做 Git 认证，Password 处必须填
+#     Personal Access Token（PAT），不是你的 GitHub 登录密码。
+#   凭证配置失败时脚本会打印详细步骤。
 #
 set -euo pipefail
 
@@ -22,6 +24,42 @@ BRANCH="main"
 
 die() { echo "❌ $*" >&2; exit 1; }
 info() { echo "▶ $*"; }
+
+# 凭证配置指引：推送失败时打印，避免只给一句「失败了」而无从下手
+cred_help() {
+  local remote
+  remote="$(git remote get-url origin 2>/dev/null || echo '(未设置)')"
+  cat <<'EOF'
+
+────────────────────────────────────────────────────────────
+如何配置 GitHub 推送凭证（任选其一）
+────────────────────────────────────────────────────────────
+
+【方式 A】Personal Access Token（推荐，最省事）
+  1. 打开 https://github.com/settings/tokens
+     选 "Generate new token (classic)"
+  2. 勾选 repo 权限，生成后复制 token（只显示一次，关掉就看不到）
+  3. 重新运行 ./release.sh，提示时输入：
+        Username: nealgavin
+        Password: <粘贴刚才的 token>   ← 不是 GitHub 登录密码
+  4. token 会存入 macOS 钥匙串，之后不再需要重复输入
+
+  若钥匙串没记住，可改用一次性内嵌方式（注意会留在 shell 历史里）：
+        git remote set-url origin https://<token>@github.com/nealgavin/siyuan-plugin-tts-all.git
+
+【方式 B】SSH
+  你本机已有 ~/.ssh/id_ed25519，但尚未添加到 GitHub：
+  1. 复制公钥：  pbcopy < ~/.ssh/id_ed25519.pub
+  2. 打开 https://github.com/settings/keys → New SSH key → 粘贴保存
+  3. 切换 remote 为 SSH：
+        git remote set-url origin git@github.com:nealgavin/siyuan-plugin-tts-all.git
+  4. 验证：      ssh -T git@github.com
+
+EOF
+  echo "【当前 remote】"
+  echo "  $remote"
+  echo
+}
 
 command -v node >/dev/null || die "未找到 node，请先安装"
 command -v git  >/dev/null || die "未找到 git"
@@ -104,18 +142,40 @@ else
   info "工作区干净，无需提交"
 fi
 
-if git rev-parse "$TAG" >/dev/null 2>&1; then
-  die "本地已存在 tag $TAG，请先删除或换版本号：git tag -d $TAG"
+# ── 4.5 推送前先校验凭证 ─────────────────────────────────────────
+# 提前用 --dry-run 完成一次认证握手：凭证不可用时立即失败，
+# 不会留下「本地已打 tag 但远端没有」的孤儿状态。
+info "校验 GitHub 推送凭证"
+if ! git push --dry-run origin "$BRANCH" >/dev/null 2>&1; then
+  echo "❌ 推送凭证校验未通过（GitHub 不支持用账号密码推送）" >&2
+  cred_help
+  exit 1
 fi
+echo "  ✓ 凭证可用"
 
-info "创建 tag $TAG"
-git tag "$TAG"
+if git rev-parse "$TAG" >/dev/null 2>&1; then
+  # 本地已有该 tag：可能是上轮推送失败留下的孤儿。
+  # 远端也有 → 说明已发布过，直接复用；远端没有 → 删掉重建（内容以当前代码为准）
+  if git ls-remote --tags origin "$TAG" 2>/dev/null | grep -q .; then
+    info "tag $TAG 已存在于远端，跳过创建"
+  else
+    info "本地已存在 tag $TAG 但远端没有，重建为当前代码"
+    git tag -d "$TAG" >/dev/null
+    git tag "$TAG"
+  fi
+else
+  info "创建 tag $TAG"
+  git tag "$TAG"
+fi
 
 # ── 5. 推送 ──────────────────────────────────────────────────────
 echo
 info "推送到 $REPO"
 if ! git push origin "$BRANCH"; then
-  die "推送分支失败：请配置 GitHub 凭证（见下方说明），然后重新运行本脚本"
+  git tag -d "$TAG" >/dev/null 2>&1 || true
+  echo "❌ 推送分支失败（本地 tag $TAG 已回滚，可安全重跑）" >&2
+  cred_help
+  exit 1
 fi
 if ! git push origin "$TAG"; then
   die "推送 tag 失败：分支已推送成功，只需修复凭证后执行  git push origin $TAG"
