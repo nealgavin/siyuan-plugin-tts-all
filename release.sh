@@ -61,7 +61,7 @@ node -e '
 
 info "校验图标体积（集市上限：icon 64KB / preview 512KB）"
 node -e '
-  const fs = require("fs");
+  const fs = require("fs"), crypto = require("crypto");
   const lim = { "icon.png": 64*1024, "preview.png": 512*1024 };
   let bad = false;
   for (const [f, max] of Object.entries(lim)) {
@@ -71,8 +71,20 @@ node -e '
     console.log(`  ${ok ? "✓" : "❌"} ${f}: ${(s/1024).toFixed(1)}KB / ${(max/1024).toFixed(0)}KB`);
     if (!ok) bad = true;
   }
+  // 额外保护：preview.png 曾被莫名覆盖成 icon.png 的副本（体积仍在上限内，
+  // 体积检查抓不到）。这里直接比对两者内容，一旦相同即判定异常。
+  if (fs.existsSync("icon.png") && fs.existsSync("preview.png")) {
+    const h = (p) => crypto.createHash("md5").update(fs.readFileSync(p)).digest("hex");
+    if (h("icon.png") === h("preview.png")) {
+      console.error("  ❌ preview.png 与 icon.png 内容完全相同（预览图被误覆盖）");
+      console.error("     请从备份恢复： cp ../siyuan-plugin-tts.me/preview.png ./preview.png");
+      bad = true;
+    } else {
+      console.log("  ✓ preview.png 与 icon.png 内容不同");
+    }
+  }
   process.exit(bad ? 1 : 0);
-' || die "图片超过集市限制"
+' || die "图片校验未通过"
 
 info "校验 JS 语法"
 node --check index.js && echo "  ✓ index.js 语法正确"

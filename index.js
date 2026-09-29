@@ -1203,6 +1203,9 @@ class HttpTts {
 class SystemTts {
   constructor() {
     this.kind = "system";
+    // 是否为「我们自己调用 stop()」打断的：被自己打断时属于预期中断，
+    // 不能向上报错，否则切换声源/换块时会误报「系统语音播放失败」。
+    this._cancelled = false;
   }
 
   get available() {
@@ -1257,6 +1260,7 @@ class SystemTts {
     return new Promise((resolve, reject) => {
       let settled = false;
       let started = false;
+      this._cancelled = false;
       const finish = (fn, arg) => {
         if (settled) {
           return;
@@ -1299,9 +1303,12 @@ class SystemTts {
       };
       utterance.onend = () => finish(resolve);
       utterance.onerror = (e) => {
-        // interrupted / canceled 属于主动停止，不作为错误
+        // interrupted / canceled 属于主动停止（含我们自己切声源、换块），
+        // 不作为错误上报，否则会误报「系统语音播放失败」。
         const reason = (e && e.error) || "";
         if (reason === "interrupted" || reason === "canceled") {
+          finish(resolve);
+        } else if (this._cancelled) {
           finish(resolve);
         } else {
           finish(reject, new Error("系统语音播放失败：" + reason));
@@ -1316,6 +1323,7 @@ class SystemTts {
   }
 
   stop() {
+    this._cancelled = true;
     try {
       window.speechSynthesis.cancel();
     } catch (e) { /* ignore */ }
@@ -1391,6 +1399,9 @@ class TtsService {
     this.failed = new Set();
     this.instances = {};
     this.lastEngineName = null;
+    // 声源代次：每次切换声源自增。用于区分「引擎真的坏了」与
+    // 「在途请求被我们自己的换声源 close() 打断」，后者不算故障。
+    this.voiceGen = 0;
   }
 
   _candidates() {
@@ -1436,6 +1447,25 @@ class TtsService {
   }
 
   async synthesize(text) {
+    // 切换声源会 close() 掉在途请求，那属于预期中断而非引擎故障。
+    // 对「因切换声源而中断」做有限次重试，用新声源重新合成，
+    // 保证切换后立刻生效；期间绝不把引擎标记为失败。
+    const MAX_VOICE_RETRY = 3;
+    for (let attempt = 0; ; attempt++) {
+      const gen = this.voiceGen;
+      try {
+        return await this._synthesizeWithFallback(text, gen);
+      } catch (e) {
+        if (e && e.voiceChanged && attempt < MAX_VOICE_RETRY) {
+          logger.info(`[TTS]\t声源已切换，改用新声源重试（第 ${attempt + 1} 次）`);
+          continue;
+        }
+        throw e;
+      }
+    }
+  }
+
+  async _synthesizeWithFallback(text, gen) {
     const candidates = this._candidates();
     let lastError = null;
     let attempted = false;
@@ -1476,6 +1506,14 @@ class TtsService {
         return wrapped;
       } catch (e) {
         lastError = e;
+        // 期间用户切换了声源：这次失败是我们自己的 close() 造成的，属于预期中断。
+        // 不能把引擎标记为失败、更不能降级 —— 否则一次换声源就会永久跳过
+        // Edge 并落到「系统语音」，表现为「切换人声后播放失败」。
+        if (this.voiceGen !== gen) {
+          const changed = new Error("声源已切换");
+          changed.voiceChanged = true;
+          throw changed;
+        }
         logger.warn(`[TTS]\t引擎 ${name} 失败，尝试降级:`, e && e.message ? e.message : e);
         this.failed.add(name);
         if (this.active === name) {
@@ -1494,6 +1532,23 @@ class TtsService {
 
   setVoice(voice) {
     this.voice = voice;
+    // 声源代次自增：让仍在途的旧声源请求知道自己已被取代（见 synthesize）
+    this.voiceGen++;
+    // 切换声源是用户主动操作，视为一次干净的重试：
+    // 清掉历史失败标记，避免某次网络抖动导致 Edge 被永久跳过、
+    // 一路降级到系统语音后报「系统语音播放失败」。
+    this.failed.clear();
+    // 主动断开 Edge 连接：让在途的旧声源请求立刻失败，
+    // 进而在新生代下用新声源立即重试。
+    // 不这样做的话，旧请求要等很久才会超时，表现为「切了人声没生效」。
+    for (const name of [ENGINE.EDGE_DIRECT, ENGINE.EDGE_PROXY]) {
+      const inst = this.instances[name];
+      if (inst && inst._ws && typeof inst.close === "function") {
+        try {
+          inst.close();
+        } catch (e) { /* ignore */ }
+      }
+    }
   }
 
   // 语音引擎切换时清理失败标记
@@ -2482,8 +2537,8 @@ module.exports = class TTSPlugin extends Plugin {
   }
 
   // 统一切换声源：菜单、悬浮窗都走这里。
-  // 已缓存/正在合成的内容仍用旧声源（已发出的请求无法更改），
-  // 但后续块会立即使用新声源。
+  // 切换后立即生效：正在朗读时，用新声源从当前块重新朗读，
+  // 而不是等当前段播完（长段落会让人以为没生效）。
   setVoice(value) {
     if (!value || value === this.currentMetadata) {
       return;
@@ -2493,6 +2548,31 @@ module.exports = class TTSPlugin extends Plugin {
     this.saveStorage();
     this.updateControlBars();
     showMessage(`${this.i18n.changeMetadata || "声源"}: ${voiceShortOf(value)}`);
+    this.restartWithVoice();
+  }
+
+  // 用新声源从「当前正在读的块」重新开始朗读。
+  // 仅在播放中（含暂停）生效；未播放时只记住设置，不主动开口。
+  restartWithVoice() {
+    const c = this.controller;
+    if (!c || c.stopped || !Array.isArray(c.blocks) || !c.blocks.length) {
+      return;
+    }
+    // 当前正在读的块就是 blocks[playIndex]：Controller 用 players[0] 对应
+    // blocks[playIndex]，playIndex 是在每块播完之后才自增的。
+    // 夹紧到有效范围，避免索引越界。
+    const idx = Math.max(0, Math.min(c.playIndex, c.blocks.length - 1));
+    // 优先「当前块 → 末尾」，保持原有播放范围；没有文档块时退化为纯文本内容
+    const rest = c.blocks.slice(idx).filter((b) => b.el);
+    if (rest.length) {
+      this.startBlocks(rest.map((b) => b.el));
+      return;
+    }
+    const text = c.blocks.slice(idx).map((b) => b.content)
+      .filter((t) => t && t.trim()).join("\n");
+    if (text) {
+      this.startRead([text]);
+    }
   }
 
   // 悬浮窗上直接切到上/下一个声源（保留给快捷键/命令使用，不再绑定单击）
