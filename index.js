@@ -1206,6 +1206,59 @@ class SystemTts {
     // 是否为「我们自己调用 stop()」打断的：被自己打断时属于预期中断，
     // 不能向上报错，否则切换声源/换块时会误报「系统语音播放失败」。
     this._cancelled = false;
+    // 鸿蒙 ArkWeb / Chromium 系的音色是**异步**就绪的：首次 getVoices() 往往
+    // 返回空数组，稍后才触发 voiceschanged 事件。这里注册一次监听，
+    // 把「音色晚到」也算作可用，否则鸿蒙上会直接误判为「未安装语音引擎」。
+    this._voicesReady = false;
+    this._voicesWaiters = [];
+    this._installVoiceListener();
+  }
+
+  // 监听 voiceschanged：音色异步到达时唤醒所有等待者。
+  _installVoiceListener() {
+    try {
+      const syn = window.speechSynthesis;
+      if (!syn || typeof syn.addEventListener !== "function") {
+        return;
+      }
+      syn.addEventListener("voiceschanged", () => {
+        this._voicesReady = true;
+        const waiters = this._voicesWaiters.splice(0);
+        waiters.forEach((fn) => {
+          try { fn(); } catch (e) { /* ignore */ }
+        });
+      });
+    } catch (e) { /* ignore */ }
+  }
+
+  // 立刻能数到的音色数量。
+  _voices() {
+    try {
+      const v = window.speechSynthesis && window.speechSynthesis.getVoices();
+      return Array.isArray(v) ? v : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // 等音色就绪，最多 waitMs 毫秒。
+  // 鸿蒙 ArkWeb 上 getVoices() 首发为空是常态，直接判死会导致系统语音完全不可用，
+  // 所以这里给一个短等待窗口（voiceschanged 一到就立刻返回，不白等）。
+  _waitForVoices(waitMs) {
+    if (this._voices().length > 0) {
+      return Promise.resolve(true);
+    }
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (ok) => {
+        if (done) { return; }
+        done = true;
+        clearTimeout(timer);
+        resolve(ok);
+      };
+      const timer = setTimeout(() => finish(this._voices().length > 0), waitMs);
+      this._voicesWaiters.push(() => finish(true));
+    });
   }
 
   get available() {
@@ -1215,15 +1268,23 @@ class SystemTts {
     }
     // 部分 WebView（含鸿蒙 ArkWeb）实现了该 API 但没有任何可用音色，
     // 此时 speak() 既不报错也不触发 onend，会导致朗读永久静默卡住。
-    // 仅在能确认「有音色」时才算可用；确认不了则交给 speak() 的超时兜底。
-    try {
-      const voices = window.speechSynthesis.getVoices();
-      if (Array.isArray(voices) && voices.length === 0) {
-        // getVoices() 在部分环境首次调用返回空、稍后才就绪，故仅当明确不支持时才判否
-        return true;
-      }
-    } catch (e) { /* ignore */ }
+    // 但 getVoices() 首发为空也可能是「异步还没就绪」，所以这里不判否，
+    // 统一交给 speak() 的启动超时兜底（见 speak 里的 3 秒 startTimer）。
     return true;
+  }
+
+  // 该设备到底有没有系统音色（给诊断/菜单提示用，不参与可用性判断）。
+  voiceStatus() {
+    const n = this._voices().length;
+    if (n > 0) {
+      return { ok: true, count: n };
+    }
+    return {
+      ok: false,
+      count: 0,
+      hint: "getVoices() 为空：该设备可能未安装系统语音引擎（如 ArkWeb 未接语音能力），"
+        + "此时系统语音会无声，请改用 Edge 在线语音。",
+    };
   }
 
   _pickVoice(lang) {
@@ -1253,6 +1314,11 @@ class SystemTts {
     if (chunks.length === 0) {
       return { kind: "system", chunks: [] };
     }
+    // 鸿蒙 ArkWeb 的音色异步就绪：先短等一下再挑，避免挑到 null 导致
+    // utterance.voice 缺省，进而被引擎按默认语言合成（或干脆不出声）。
+    if (this._voices().length === 0) {
+      await this._waitForVoices(600);
+    }
     return { kind: "system", chunks, lang, voice: this._pickVoice(lang) };
   }
 
@@ -1260,7 +1326,10 @@ class SystemTts {
     return new Promise((resolve, reject) => {
       let settled = false;
       let started = false;
+      let startTimer = null;
+      let stallTimer = null;
       this._cancelled = false;
+
       const finish = (fn, arg) => {
         if (settled) {
           return;
@@ -1271,14 +1340,6 @@ class SystemTts {
         fn(arg);
       };
 
-      // 若从未触发 onstart，说明该 WebView 根本没有可用语音引擎，
-      // 超时后报错以便降级，而不是无声地永久等待。
-      const startTimer = setTimeout(() => {
-        if (!started) {
-          finish(reject, new Error("系统语音无响应（该设备可能未安装语音引擎）"));
-        }
-      }, 3000);
-
       const clearStall = () => {
         clearTimeout(stallTimer);
         // 单块最长等待时间随文本长度放宽，防止引擎中途卡死导致整篇朗读挂住
@@ -1286,39 +1347,74 @@ class SystemTts {
           finish(reject, new Error("系统语音播放超时"));
         }, Math.max(15000, chunk.length * 400));
       };
-      let stallTimer = setTimeout(() => {
-        finish(reject, new Error("系统语音播放超时"));
-      }, Math.max(15000, chunk.length * 400));
 
-      const utterance = new window.SpeechSynthesisUtterance(chunk);
-      utterance.lang = lang;
-      utterance.rate = Math.min(Math.max(rate || 1, 0.1), 10);
-      if (voice) {
-        utterance.voice = voice;
-      }
-      utterance.onstart = () => {
-        started = true;
-        clearTimeout(startTimer);
-        clearStall();
-      };
-      utterance.onend = () => finish(resolve);
-      utterance.onerror = (e) => {
-        // interrupted / canceled 属于主动停止（含我们自己切声源、换块），
-        // 不作为错误上报，否则会误报「系统语音播放失败」。
-        const reason = (e && e.error) || "";
-        if (reason === "interrupted" || reason === "canceled") {
-          finish(resolve);
-        } else if (this._cancelled) {
-          finish(resolve);
-        } else {
-          finish(reject, new Error("系统语音播放失败：" + reason));
+      // 关键：必须先确认音色就绪，再创建 utterance 并 speak()。
+      // 鸿蒙 ArkWeb / Chromium 系的音色是异步就绪的（首次 getVoices() 为空，
+      // 稍后才有）。若在音色为空时就调用 speak()，部分实现会**直接把这句话丢掉**，
+      // 既不报错也不触发 onstart —— 事后补等音色也救不回来，只能重新 speak()，
+      // 所以这里把「等音色」放在 speak() 之前，而不是放在超时兜底里。
+      (async () => {
+        if (this._voices().length === 0) {
+          await this._waitForVoices(VOICE_WAIT_MS);
         }
-      };
-      try {
-        window.speechSynthesis.speak(utterance);
-      } catch (e) {
-        finish(reject, e instanceof Error ? e : new Error(String(e)));
-      }
+        if (settled) {
+          return;
+        }
+        if (this._cancelled) { // 等待期间用户点了停止
+          finish(resolve);
+          return;
+        }
+        if (this._voices().length === 0) {
+          // 等不到音色：明确报错以便降级，而不是无声地永久等待
+          finish(reject, new Error("系统语音不可用：设备没有可用的系统音色"
+            + "（鸿蒙 ArkWeb 可能未接入语音能力），请改用 Edge 在线语音"));
+          return;
+        }
+
+        // 音色可能刚到达，重新挑一次（调用方传进来的 voice 可能是 null）
+        const picked = (voice && voice.lang) ? voice : this._pickVoice(lang);
+
+        // 若从未触发 onstart，说明该 WebView 的语音引擎没真正工作，
+        // 超时后报错以便降级，而不是无声地永久等待。
+        startTimer = setTimeout(() => {
+          if (!started) {
+            finish(reject, new Error("系统语音无响应（音色已就绪但引擎未开始播放）"));
+          }
+        }, 3000);
+        stallTimer = setTimeout(() => {
+          finish(reject, new Error("系统语音播放超时"));
+        }, Math.max(15000, chunk.length * 400));
+
+        const utterance = new window.SpeechSynthesisUtterance(chunk);
+        utterance.lang = lang;
+        utterance.rate = Math.min(Math.max(rate || 1, 0.1), 10);
+        if (picked) {
+          utterance.voice = picked;
+        }
+        utterance.onstart = () => {
+          started = true;
+          clearTimeout(startTimer);
+          clearStall();
+        };
+        utterance.onend = () => finish(resolve);
+        utterance.onerror = (e) => {
+          // interrupted / canceled 属于主动停止（含我们自己切声源、换块），
+          // 不作为错误上报，否则会误报「系统语音播放失败」。
+          const reason = (e && e.error) || "";
+          if (reason === "interrupted" || reason === "canceled") {
+            finish(resolve);
+          } else if (this._cancelled) {
+            finish(resolve);
+          } else {
+            finish(reject, new Error("系统语音播放失败：" + reason));
+          }
+        };
+        try {
+          window.speechSynthesis.speak(utterance);
+        } catch (e) {
+          finish(reject, e instanceof Error ? e : new Error(String(e)));
+        }
+      })();
     });
   }
 
@@ -1349,6 +1445,10 @@ class SystemTts {
 /*****************************************************************************
  * 七、引擎调度：按优先级自动降级
  *****************************************************************************/
+// 鸿蒙 ArkWeb / Chromium 系音色异步就绪：等这么久还没音色就判定设备不支持。
+// 有 voiceschanged 事件时会立刻返回，不会白等。
+const VOICE_WAIT_MS = 1500;
+
 const ENGINE = {
   AUTO: "auto",
   EDGE_DIRECT: "edge-direct",
@@ -2175,20 +2275,31 @@ async function diagnose(plugin) {
     "AudioContext", ctxState + (ctxState === "suspended" ? "（已被自动播放策略阻止，请点击一次播放解锁）" : ""));
 
   // 5. 系统语音音色
+  // 注意：getVoices() 首发为空在鸿蒙 ArkWeb / Chromium 上是**正常**的（音色异步就绪），
+  // 所以这里等一小会儿再判断，避免把「还没就绪」误报成「设备不支持」。
   let voiceInfo = "不支持";
   try {
     if (typeof window.speechSynthesis !== "undefined") {
-      const voices = window.speechSynthesis.getVoices() || [];
+      const sys = new SystemTts();
+      let voices = sys._voices();
+      if (voices.length === 0) {
+        await sys._waitForVoices(VOICE_WAIT_MS);
+        voices = sys._voices();
+      }
       const zh = voices.filter((v) => (v.lang || "").toLowerCase().startsWith("zh"));
       voiceInfo = `共 ${voices.length} 个音色，其中中文 ${zh.length} 个`;
-      if (voices.length === 0) {
+      if (voices.length > 0) {
+        voiceInfo += `（${zh[0] ? zh[0].name : voices[0].name}）`;
+      } else if (isHarmonyOS()) {
+        voiceInfo += "（鸿蒙 ArkWeb 未提供系统音色，系统语音会无声 → 请用 Edge 在线语音）";
+      } else {
         voiceInfo += "（为空则该设备未安装语音引擎，系统语音会无声）";
       }
     }
   } catch (e) {
     voiceInfo = "异常：" + (e && e.message ? e.message : e);
   }
-  add(/否则|共 [1-9]/.test(voiceInfo) ? true : (voiceInfo === "不支持" ? false : null), "系统语音", voiceInfo);
+  add(/共 [1-9]/.test(voiceInfo) ? true : (voiceInfo === "不支持" ? false : null), "系统语音", voiceInfo);
 
   // 6. 各在线引擎连通性实测
   lines.push("");
@@ -2957,7 +3068,9 @@ module.exports = class TTSPlugin extends Plugin {
       [ENGINE.EDGE_DIRECT, this.i18n.engineEdgeDirect, USE_NODE_NET ? "" : this.i18n.engineDesktopOnly],
       [ENGINE.EDGE_PROXY, this.i18n.engineEdgeProxy, ""],
       [ENGINE.HTTP, this.i18n.engineHttp, warn],
-      [ENGINE.SYSTEM, this.i18n.engineSystem, warn],
+        // 鸿蒙 ArkWeb 通常不提供系统音色，系统语音会无声，这里额外提示一句
+        [ENGINE.SYSTEM, this.i18n.engineSystem,
+          isHarmonyOS() ? this.i18n.engineHarmonyNoVoice : warn],
     ].map(([value, label, tip]) => ({
       icon: value === this.engine ? "iconSelect" : "",
       label: tip ? `${label}（${tip}）` : label,
