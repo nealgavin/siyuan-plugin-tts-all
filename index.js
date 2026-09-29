@@ -986,6 +986,23 @@ function isAudioBytes(bytes) {
 }
 
 // 提取错误响应中的可读信息，便于用户/日志定位
+// 把底层报错翻译成用户看得懂、且能照着行动的话。
+// 典型：断网时 Edge 会抛 "getaddrinfo ENOTFOUND speech.platform.bing.com"，
+// 直接甩给用户既看不懂、也不知道下一步该干什么。
+function friendlyError(e) {
+  const msg = e && e.message ? String(e.message) : String(e || "");
+  const code = e && e.code ? String(e.code) : "";
+  const all = msg + " " + code;
+  // 离线 / DNS / 连接类
+  if (/ENOTFOUND|EAI_AGAIN|ERR_NAME_NOT_RESOLVED|ERR_INTERNET_DISCONNECTED|ERR_NETWORK|Failed to fetch|NetworkError|ENETUNREACH|ECONNREFUSED|ETIMEDOUT|timeout|Connection closed|closed before/i.test(all)) {
+    return "网络不可用：朗读需要联网（Edge 语音为在线合成）。请检查网络后重试。";
+  }
+  if (/401|403|Unauthorized|Forbidden/i.test(all)) {
+    return "语音服务拒绝访问（可能被限流或需要授权），稍后重试。";
+  }
+  return msg;
+}
+
 function describeBadResponse(bytes) {
   try {
     const text = new TextDecoder("utf-8").decode(bytes.slice(0, 300));
@@ -2130,7 +2147,7 @@ class Controller {
         break;
       } catch (e) {
         lastError = e;
-        const reason = e && e.message ? e.message : String(e);
+        const reason = friendlyError(e);
         logger.error(`[Controller]\tplay block failed (第 ${attempt + 1} 次):`, e);
         if (player.block) {
           player.block.unhighlight();
@@ -2318,7 +2335,7 @@ async function diagnose(plugin) {
       const size = r && typeof r.byteLength === "number" ? r.byteLength : (r && r.data ? r.data.byteLength : 0);
       add(size > 0, "Edge 直连", `成功，音频 ${size} 字节`);
     } catch (e) {
-      add(false, "Edge 直连", "失败：" + (e && e.message ? e.message : e));
+      add(false, "Edge 直连", "失败：" + friendlyError(e));
     }
   } else {
     add(null, "Edge 直连", "跳过（移动端无 Node 网络栈）");
@@ -2335,7 +2352,7 @@ async function diagnose(plugin) {
       const size = r && typeof r.byteLength === "number" ? r.byteLength : (r && r.data ? r.data.byteLength : 0);
       add(size > 0, "Edge 内核代理", `成功，音频 ${size} 字节`);
     } catch (e) {
-      add(false, "Edge 内核代理", "失败：" + (e && e.message ? e.message : e));
+      add(false, "Edge 内核代理", "失败：" + friendlyError(e));
     }
   } else {
     add(null, "Edge 内核代理", !wsOk ? "跳过（内核版本过低）" : "跳过（缺少 API Token）");

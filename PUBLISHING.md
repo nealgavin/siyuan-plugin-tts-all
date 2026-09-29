@@ -1,7 +1,7 @@
 # 上架思源集市 · 操作手册
 
 > 本手册对应 **路线 B（作为独立新集市包上架）**。
-> 仓库：`nealgavin/siyuan-plugin-tts-all` ｜ 包名：`siyuan-plugin-tts-all` ｜ 版本：`1.2.10`
+> 仓库：`nealgavin/siyuan-plugin-tts-all` ｜ 包名：`siyuan-plugin-tts-all` ｜ 版本：`1.2.11`
 
 ---
 
@@ -16,6 +16,7 @@
 | 修复（v1.2.8）：点继续报「获取文档失败」 | ✅ 已推送（tag `v1.2.8` → `caff471`，Release 已生成） |
 | 特性（v1.2.9）：鸿蒙系统语音（离线）适配 | ✅ 已推送（tag `v1.2.9` → `9b43046`，Release 已生成） |
 | 修正（v1.2.10）：自检结论的过时描述 + 鸿蒙说明 | ✅ 已推送（tag `v1.2.10` → `427933e`，Release 已生成） |
+| 改进（v1.2.11）：断网提示人话化 | ⏳ 本地已完成，待推送 tag `v1.2.11` |
 | GitHub Actions 打包 | ✅ 已成功（run 36537545088） |
 | 创建 Release | ✅ 已发布，资产 `package.zip` 93,632 字节 |
 | 第 2 步：向集市提 PR | ⬜ **未完成 —— 这是「集市里看不到」的唯一原因** |
@@ -127,7 +128,7 @@ curl -s https://api.github.com/repos/nealgavin/siyuan-plugin-tts-all/releases/la
 
 > 若只想立刻在本机用上，**不必等集市**：把
 > `/Users/nealgavin/Documents/siyuan/siyuan-plugin-tts` 整个目录拷到
-> `<工作空间>/data/plugins/siyuan-plugin-tts-all/` 后重启思源即可（本地已装好 v1.2.10）。
+> `<工作空间>/data/plugins/siyuan-plugin-tts-all/` 后重启思源即可（本地已装好 v1.2.11）。
 
 ---
 
