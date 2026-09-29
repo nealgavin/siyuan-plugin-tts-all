@@ -1658,24 +1658,42 @@ async function ensureAudioRunning(timeout = 1200) {
 const MAX_BLOCK_RETRY = 2;
 const BLOCK_RETRY_DELAY = 600;
 
-// 从块元素向上找文档 ID（思源把 data-root-id 挂在 protyle 容器上，
-// 不同版本位置不一，这里多找一层并允许元素自身带该属性）
+// 从 DOM 静态推断「一个块 ID」，再交由内核接口换成文档 ID。
+//
+// 为什么不直接找文档 ID：思源**不会**把文档 ID 写到 .protyle-wysiwyg 或
+// .protyle-title 上（data-root-id 只出现在搜索结果、嵌入块和右键菜单里），
+// 而 .protyle-wysiwyg 的第一个子元素是正文第一个**块**、不是文档块本身，
+// 直接拿它当文档 ID 会变成「只读那一个块」。所以这里只负责找「任意一个块」，
+// 用 /api/block/getBlockInfo 拿 rootID —— 这是内核的权威答案。
 function rootIdOf(el) {
+  // 只认 data-root-id：它出现在嵌入块 / 菜单项上，语义就是文档 ID，可靠。
   if (!el || typeof el.closest !== "function") {
     return null;
   }
   const holder = el.closest("[data-root-id]");
-  const id = (holder && holder.getAttribute("data-root-id")) || el.getAttribute("data-root-id");
-  return id || null;
+  const direct = (holder && holder.getAttribute("data-root-id"))
+    || (typeof el.getAttribute === "function" ? el.getAttribute("data-root-id") : null);
+  return direct || null;
 }
 
-// 当前打开的文档 ID；无法确定时返回 null
-function currentDocRootId() {
-  const w = document.querySelector(".protyle-wysiwyg");
-  if (!w) {
-    return null;
+// 在当前编辑器里找一个「种子块 ID」。拿不到就返回 null（由调用方决定兜底）。
+// 优先级：选中的块 > 面包屑当前项 > 正文里第一个块。
+function seedBlockIdFromDom() {
+  const sel = document.querySelector(".protyle-wysiwyg--select[data-node-id]");
+  if (sel) {
+    return sel.getAttribute("data-node-id");
   }
-  return rootIdOf(w) || w.getAttribute("data-node-id") || null;
+  // 面包屑当前项就是光标所在块，它的 rootID 就是当前文档
+  const active = document.querySelector(".protyle-breadcrumb__item--active[data-node-id]");
+  if (active) {
+    return active.getAttribute("data-node-id");
+  }
+  const first = document.querySelector(".protyle-wysiwyg [data-node-id]");
+  if (first) {
+    return first.getAttribute("data-node-id");
+  }
+  const w = document.querySelector(".protyle-wysiwyg[data-node-id]");
+  return w ? w.getAttribute("data-node-id") : null;
 }
 
 function sleep(ms) {
@@ -2656,10 +2674,11 @@ module.exports = class TTSPlugin extends Plugin {
     }
 
     // 情况二：重新拉取「该块 → 文档末尾」
-    const holder = blockEl.closest("[data-root-id]");
-    const rootID = holder && holder.getAttribute("data-root-id");
+    // 文档 ID 必须问内核：思源不在编辑器 DOM 上写 data-root-id，
+    // 以前这里只认 data-root-id，拿到 null 就退化成「只读这一个块」。
+    const rootID = rootIdOf(blockEl) || await this.resolveRootId(nodeId);
     if (!rootID) {
-      // 退化为只朗读该块，避免完全无响应
+      // 真的定位不到文档，退化为只朗读该块，避免完全无响应
       this.startBlocks([blockEl]);
       return true;
     }
@@ -2763,6 +2782,22 @@ module.exports = class TTSPlugin extends Plugin {
     }
   }
 
+  // 把「任意块 ID」换成「文档 ID」。
+  // 思源不在编辑器 DOM 上写文档 ID，所以这一步必须问内核；
+  // /api/block/getBlockInfo 直接返回 rootID，是权威且唯一的可靠来源。
+  // 传进来的 id 本身可能已经是文档 ID（则原样返回）。
+  async resolveRootId(id) {
+    if (!id) {
+      return null;
+    }
+    const res = await this.fetchSyncPost("/api/block/getBlockInfo", { id });
+    if (res && res.code === 0 && res.data && res.data.rootID) {
+      return res.data.rootID;
+    }
+    // 拿不到就当作它本身已经是文档 ID，交给后续请求去验证
+    return id;
+  }
+
   async fetchDocBlocks(rootID, fromBlockId) {
     const res = await this.fetchSyncPost("/api/block/getBlockDOM", { id: rootID });
     if (!res || res.code !== 0 || !res.data) {
@@ -2790,7 +2825,7 @@ module.exports = class TTSPlugin extends Plugin {
   // 返回 DOM 元素数组，交给 startBlocks 时会被包成 Block。
   // 若拿不到块 ID（即「不知道从哪个块开始」），则退回整篇文档，
   // 也就是从第一个块开始读 —— 不因为定位失败就什么都不读。
-  async fetchBlocksFrom(rootID, blockEl) {
+  async fetchBlocksFrom(rootID, blockEl, quiet) {
     try {
       const nodeId = blockEl && typeof blockEl.getAttribute === "function"
         ? blockEl.getAttribute("data-node-id") : null;
@@ -2798,15 +2833,15 @@ module.exports = class TTSPlugin extends Plugin {
         return [];
       }
       if (!nodeId) {
-        return await this.fetchDocBlocks(rootID, null);
+        return await this.fetchDocBlocks(rootID, null, quiet);
       }
-      const all = await this.fetchDocBlocks(rootID, nodeId);
+      const all = await this.fetchDocBlocks(rootID, nodeId, quiet);
       if (all.length) {
         return all;
       }
       // 该块不在文档块列表里（例如已被删除）：从第一个块开始
       logger.warn("[TTS]\t未定位到起始块，改为从第一个块开始");
-      return await this.fetchDocBlocks(rootID, null);
+      return await this.fetchDocBlocks(rootID, null, quiet);
     } catch (e) {
       logger.warn("[TTS]\t获取起始块失败", e);
       return [];
@@ -3030,45 +3065,55 @@ module.exports = class TTSPlugin extends Plugin {
   }
 
   // 「继续」：按优先级决定从哪读 ——
-  //   ① 当前选中的块  ② 上一次朗读的块  ③ 文档第一个块
-  // （①②都没有时自然落到③，也就是「不知道从哪个块开始就从第一个块开始」）
+  //   ① 当前选中的块  ② 上一次朗读的块  ③ 当前文档第一个块
+  // 全部落空时就报错提示；只要有一篇能定位到，就从第一个块开始读整篇。
   async resumeReading() {
     unlockAudio();
 
-    // ① 选中的块（与块菜单一致：从该块读到文档末尾）
-    let startEl = null;
-    let rootID = null;
-    const selected = document.querySelectorAll(".protyle-wysiwyg--select");
-    if (selected.length) {
-      startEl = selected[0];
-      rootID = rootIdOf(startEl);
+    // 起点块：选中 > 上次朗读 > 没有
+    let startId = null;
+    const sel = document.querySelector(".protyle-wysiwyg--select[data-node-id]");
+    if (sel) {
+      startId = sel.getAttribute("data-node-id");
     }
-
-    // ② 上次朗读的块
-    if (!startEl && this.lastNodeId) {
-      startEl = document.querySelector(`.protyle-wysiwyg [data-node-id="${this.lastNodeId}"]`);
-      if (startEl) {
-        rootID = rootIdOf(startEl) || rootID;
+    if (!startId && this.lastNodeId) {
+      // 上次的块可能已经被删除，确认它还在文档里才用
+      const el = document.querySelector(`.protyle-wysiwyg [data-node-id="${this.lastNodeId}"]`);
+      if (el) {
+        startId = this.lastNodeId;
       }
     }
 
-    // 依次尝试：已定位的文档 → 当前打开的文档 → 上次朗读所在的文档
-    const tried = [];
+    // 文档 ID 候选：上次朗读所在文档 → 从起点块/当前编辑器推断出的文档
+    const candidates = [];
     const push = (v) => {
-      if (v && tried.indexOf(v) === -1) {
-        tried.push(v);
+      if (v && candidates.indexOf(v) === -1) {
+        candidates.push(v);
       }
     };
-    push(rootID);
-    push(currentDocRootId());
     push(this.lastRootId);
+    // 起点块所在的编辑器容器（块被嵌入在别的文档时优先按它算）
+    const startEl = startId
+      ? document.querySelector(`.protyle-wysiwyg [data-node-id="${startId}"]`) : null;
+    push(rootIdOf(startEl) || rootIdOf(sel));
+    // 当前编辑器里的某个块 → 问内核换成文档 ID
+    const seed = seedBlockIdFromDom();
+    if (seed) {
+      push(await this.resolveRootId(seed));
+    }
+    // 最后：起点块自身也可能是别的文档里的块
+    if (startId) {
+      push(await this.resolveRootId(startId));
+    }
 
-    for (const id of tried) {
-      // 有起点块：从该块开始；没有起点块：从第一个块开始读整篇
-      let blocks = startEl ? await this.fetchBlocksFrom(id, startEl) : await this.fetchDocBlocks(id, null);
+    // 逐个试探候选文档：失败是正常的（可能是在看另一篇），所以全程静默，
+    // 只有全部落空才弹一次提示 —— 否则用户会看到一串「获取文档内容失败」。
+    for (const id of candidates) {
+      // 有起点块：从该块读到文末；没有：从第一个块读整篇
+      let blocks = await this.fetchBlocksFrom(id, startEl, true);
       if (!blocks.length && startEl) {
-        // 起点块不属于该文档（例如正在看另一篇）→ 该文档从第一个块开始
-        blocks = await this.fetchDocBlocks(id, null);
+        // 起点块不属于这篇文档（比如正在看另一篇）→ 这篇从第一个块开始
+        blocks = await this.fetchDocBlocks(id, null, true);
       }
       if (blocks.length) {
         this.startBlocks(blocks);
