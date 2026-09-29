@@ -1,0 +1,84 @@
+:root {
+    --tts-plugin-hightlight: var(--b3-theme-primary);
+}
+
+.tts-highlight {
+    border: 1px solid var(--tts-plugin-hightlight) !important;
+}
+
+/* 移动端 / 平板 / 鸿蒙端的悬浮控制条（移动端前端不挂载底部状态栏） */
+.tts-mobile-bar {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: 72px;
+    z-index: 210;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-sizing: border-box;
+    padding: 8px 14px;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 22px;
+    background: var(--b3-theme-surface);
+    box-shadow: var(--b3-dialog-shadow);
+    color: var(--b3-theme-on-surface);
+    font-size: 13px;
+    line-height: 18px;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.tts-mobile-bar .tts-nav-btn {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+    border-radius: 50%;
+    color: var(--b3-theme-on-surface);
+    cursor: pointer;
+}
+
+.tts-mobile-bar .tts-nav-btn:active {
+    background: var(--b3-list-hover);
+}
+
+.tts-mobile-bar .tts-nav-btn svg {
+    width: 16px;
+    height: 16px;
+}
+
+.tts-mobile-bar .tts-mobile-content {
+    flex: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* 声源标签：点击轮换下一个声源，长按/右键展开完整列表 */
+.tts-voice-chip {
+    flex: none;
+    padding: 2px 10px;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 12px;
+    background: var(--b3-theme-background);
+    color: var(--b3-theme-on-surface);
+    font-size: 12px;
+    line-height: 18px;
+    white-space: nowrap;
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.tts-voice-chip:active {
+    background: var(--b3-list-hover);
+}
+
+/* 桌面端底部状态栏里的声源标签更紧凑一些 */
+.toolbar__item .tts-voice-chip {
+    margin-left: 4px;
+    padding: 0 6px;
+    font-size: 12px;
+}

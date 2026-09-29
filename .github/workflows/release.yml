@@ -1,0 +1,36 @@
+name: Create Release on Tag Push
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# 创建 Release 需要写权限；缺少该声明会导致 Release 步骤报
+# "Resource not accessible by integration"
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Package zip
+        uses: vimtor/action-zip@v1
+        with:
+          files: icon.png index.css index.js plugin.json preview.png README.md LICENSE i18n/
+          recursive: false
+          dest: package.zip
+          
+      - name: Release
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          artifactErrorsFailBuild: true
+          artifacts: "package.zip"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          prerelease: false
+          makeLatest: true
