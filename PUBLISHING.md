@@ -1,7 +1,7 @@
 # 上架思源集市 · 操作手册
 
 > 本手册对应 **路线 B（作为独立新集市包上架）**。
-> 仓库：`nealgavin/siyuan-plugin-tts-all` ｜ 包名：`siyuan-plugin-tts-all` ｜ 版本：`1.2.3`
+> 仓库：`nealgavin/siyuan-plugin-tts-all` ｜ 包名：`siyuan-plugin-tts-all` ｜ 版本：`1.2.4`
 
 ---
 
@@ -29,7 +29,7 @@ cd /Users/nealgavin/Documents/siyuan/siyuan-plugin-tts
 ./release.sh
 ```
 
-脚本会依次：校验清单 → 校验图标体积 → 校验 JS 语法 → 提交 → 打 tag `v1.2.3` → 推送。
+脚本会依次：校验清单 → 校验图标体积 → 校验 JS 语法 → 提交 → 打 tag `v1.2.4` → 推送。
 
 推送时会要求输入 GitHub **用户名**和 **Personal Access Token**（不是密码）。
 Token 需勾选 `repo` 权限，在 https://github.com/settings/tokens 生成。
@@ -88,6 +88,7 @@ curl -s https://api.github.com/repos/nealgavin/siyuan-plugin-tts-all/releases/la
 | `readme` 含 `default` 键且文件存在 | ✅ |
 | `icon.png` 26.3KB ≤ 64KB | ✅ |
 | `preview.png` 362.7KB ≤ 512KB | ✅ |
+| `preview.png` 与 `icon.png` 内容不同（防误覆盖） | ✅ |
 | `backends` / `frontends` 类型正确、未与 `all` 混用 | ✅ |
 | `package.zip` 路径全用正斜杠、包根结构正确 | ✅ |
 
