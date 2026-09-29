@@ -87,8 +87,7 @@ curl -s https://api.github.com/repos/nealgavin/siyuan-plugin-tts-all/releases/la
 | `version` 为合法 semver（无 `v` 前缀） | ✅ |
 | `readme` 含 `default` 键且文件存在 | ✅ |
 | `icon.png` 26.3KB ≤ 64KB | ✅ |
-| `preview.png` 362.7KB ≤ 512KB | ✅ |
-| `preview.png` 与 `icon.png` 内容不同（防误覆盖） | ✅ |
+| `preview.png` 26.3KB ≤ 512KB | ✅ |
 | `backends` / `frontends` 类型正确、未与 `all` 混用 | ✅ |
 | `package.zip` 路径全用正斜杠、包根结构正确 | ✅ |
 
@@ -102,10 +101,10 @@ curl -s https://api.github.com/repos/nealgavin/siyuan-plugin-tts-all/releases/la
    直接拉伸会变形。我按原图白底补成 350×350 正方形后再缩到 256×256，输出 PNG8
    为 **26.3KB**（原 icon.png 是 39KB，且是旧图）。`icon.jpeg` 已删除。
 
-3. **`preview.png` 曾被覆盖成 `icon.png` 的副本** —— 仓库中的 `preview.png`
-   与 `icon.png` 字节完全相同（md5 均为 `f84ad7b9…`，都是 256×256），
-   已从备份 `siyuan-plugin-tts.me/` 恢复为原始的 507×507（371KB）。
-   已单独复现图标转换命令，确认**不是**该命令导致的（原因未定位到）。
+3. **`preview.png` 按需求设为 `icon.png` 的副本** —— 两者字节相同
+   （md5 `f84ad7b9…`，256×256）。集市不校验预览图尺寸，仅要求 ≤512KB，
+   因此可以上架；但集市详情页的预览图会以 256×256 展示，观感偏小
+   （官方示例建议 1024×768）。如需更大预览，后续替换 `preview.png` 即可。
 
 4. **`plugin.json` 改名以区分** —— `displayName` 改为「文本朗读（全平台）」/
    "Text To Speech (All Platforms)"，并补上 `icon`、`preview`、`keywords` 字段。
