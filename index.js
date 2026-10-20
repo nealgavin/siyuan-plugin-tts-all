@@ -713,7 +713,7 @@ async function generateSecMsGecToken() {
 async function combineUrl(url) {
   const secMsGec = await generateSecMsGecToken();
   const separator = url.includes("?") ? "&" : "?";
-  return `${url}${separator}TrustedClientToken=${TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${secMsGec}&Sec-MS-GEC-Version=${SEC_MS_GEC_VERSION}`;
+  return `${url}${separator}Ocp-Apim-Subscription-Key=${TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${secMsGec}&Sec-MS-GEC-Version=${SEC_MS_GEC_VERSION}`;
 }
 
 /**
@@ -722,7 +722,7 @@ async function combineUrl(url) {
  *   "kernel" 经思源内核 WebSocket 代理
  */
 class MsEdgeTTS {
-  static SYNTH_URL = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
+  static SYNTH_URL = "wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1";
   static AUDIO_DELIM = "Path:audio\r\n";
   static VOICE_LANG_REGEX = /\w{2}-\w{2}/;
 
@@ -800,7 +800,7 @@ class MsEdgeTTS {
       return new KernelProxyWebSocket(url, edgeHeaders());
     }
     return new NodeWebSocket(url, {
-      host: "speech.platform.bing.com",
+      host: "api.msedgeservices.com",
       headers: edgeHeaders(),
       rejectUnauthorized: false,
     });
